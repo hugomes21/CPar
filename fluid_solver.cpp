@@ -14,7 +14,18 @@
 // Add sources (density or velocity)
 void add_source(int M, int N, int O, float *x, float *s, float dt) {
   int size = (M + 2) * (N + 2) * (O + 2);
-  for (int i = 0; i < size; i++) {
+  int i = 0;
+
+  // Unroll the loop by a factor of 4
+  for (; i <= size - 4; i += 4) {
+    x[i] += dt * s[i];
+    x[i + 1] += dt * s[i + 1];
+    x[i + 2] += dt * s[i + 2];
+    x[i + 3] += dt * s[i + 3];
+  }
+
+  // Handle the remaining elements
+  for (; i < size; i++) {
     x[i] += dt * s[i];
   }
 }
@@ -23,23 +34,29 @@ void add_source(int M, int N, int O, float *x, float *s, float dt) {
 void set_bnd(int M, int N, int O, int b, float *x) {
   int i, j;
 
+  int v1 = IX(i, j, 0);
+  int v2 = IX(i, j, O);
+  int v3 = IX(i, 0, j);
+  int v4 = IX(i, N, j);
+  int v5 = IX(0, i, j);
+
   // Set boundary on faces
   for (i = 1; i <= M; i++) {
     for (j = 1; j <= N; j++) {
-      x[IX(i, j, 0)] = b == 3 ? -x[IX(i, j, 1)] : x[IX(i, j, 1)];
-      x[IX(i, j, O + 1)] = b == 3 ? -x[IX(i, j, O)] : x[IX(i, j, O)];
+      x[v1] = b == 3 ? -x[IX(i, j, 1)] : x[IX(i, j, 1)];
+      x[IX(i, j, O + 1)] = b == 3 ? -x[v2] : x[v2];
     }
   }
   for (i = 1; i <= N; i++) {
     for (j = 1; j <= O; j++) {
-      x[IX(0, i, j)] = b == 1 ? -x[IX(1, i, j)] : x[IX(1, i, j)];
-      x[IX(M + 1, i, j)] = b == 1 ? -x[IX(M, i, j)] : x[IX(M, i, j)];
+      x[v5] = b == 1 ? -x[IX(1, i, j)] : x[IX(1, i, j)];
+      x[IX(M + 1, i, j)] = b == 1 ? -x[v5] : x[v5];
     }
   }
   for (i = 1; i <= M; i++) {
     for (j = 1; j <= O; j++) {
-      x[IX(i, 0, j)] = b == 2 ? -x[IX(i, 1, j)] : x[IX(i, 1, j)];
-      x[IX(i, N + 1, j)] = b == 2 ? -x[IX(i, N, j)] : x[IX(i, N, j)];
+      x[v3] = b == 2 ? -x[IX(i, 1, j)] : x[IX(i, 1, j)];
+      x[IX(i, N + 1, j)] = b == 2 ? -x[v4] : x[v4];
     }
   }
 
@@ -58,7 +75,55 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
   for (int l = 0; l < LINEARSOLVERTIMES; l++) {
     for (int k = 1; k <= O; k++) {
       for (int j = 1; j <= N; j++) {
-        for (int i = 1; i <= M; i++) {
+        int i;
+        // Loop unrolling com fator 8
+        for (i = 1; i <= M - 7; i += 8) {
+          // Índices para os 8 elementos consecutivos
+          int idx1 = IX(i, j, k);
+          int idx2 = IX(i + 1, j, k);
+          int idx3 = IX(i + 2, j, k);
+          int idx4 = IX(i + 3, j, k);
+          int idx5 = IX(i + 4, j, k);
+          int idx6 = IX(i + 5, j, k);
+          int idx7 = IX(i + 6, j, k);
+          int idx8 = IX(i + 7, j, k);
+
+          // Atualização dos 8 elementos com os cálculos dos vizinhos
+          x[idx1] = (x0[idx1] + a * (x[IX(i - 1, j, k)] + x[IX(i + 1, j, k)] +
+                                     x[IX(i, j - 1, k)] + x[IX(i, j + 1, k)] +
+                                     x[IX(i, j, k - 1)] + x[IX(i, j, k + 1)])) / c;
+
+          x[idx2] = (x0[idx2] + a * (x[IX(i, j, k)] + x[IX(i + 2, j, k)] +
+                                     x[IX(i + 1, j - 1, k)] + x[IX(i + 1, j + 1, k)] +
+                                     x[IX(i + 1, j, k - 1)] + x[IX(i + 1, j, k + 1)])) / c;
+
+          x[idx3] = (x0[idx3] + a * (x[IX(i + 1, j, k)] + x[IX(i + 3, j, k)] +
+                                     x[IX(i + 2, j - 1, k)] + x[IX(i + 2, j + 1, k)] +
+                                     x[IX(i + 2, j, k - 1)] + x[IX(i + 2, j, k + 1)])) / c;
+
+          x[idx4] = (x0[idx4] + a * (x[IX(i + 2, j, k)] + x[IX(i + 4, j, k)] +
+                                     x[IX(i + 3, j - 1, k)] + x[IX(i + 3, j + 1, k)] +
+                                     x[IX(i + 3, j, k - 1)] + x[IX(i + 3, j, k + 1)])) / c;
+
+          x[idx5] = (x0[idx5] + a * (x[IX(i + 3, j, k)] + x[IX(i + 5, j, k)] +
+                                     x[IX(i + 4, j - 1, k)] + x[IX(i + 4, j + 1, k)] +
+                                     x[IX(i + 4, j, k - 1)] + x[IX(i + 4, j, k + 1)])) / c;
+
+          x[idx6] = (x0[idx6] + a * (x[IX(i + 4, j, k)] + x[IX(i + 6, j, k)] +
+                                     x[IX(i + 5, j - 1, k)] + x[IX(i + 5, j + 1, k)] +
+                                     x[IX(i + 5, j, k - 1)] + x[IX(i + 5, j, k + 1)])) / c;
+
+          x[idx7] = (x0[idx7] + a * (x[IX(i + 5, j, k)] + x[IX(i + 7, j, k)] +
+                                     x[IX(i + 6, j - 1, k)] + x[IX(i + 6, j + 1, k)] +
+                                     x[IX(i + 6, j, k - 1)] + x[IX(i + 6, j, k + 1)])) / c;
+
+          x[idx8] = (x0[idx8] + a * (x[IX(i + 6, j, k)] + x[IX(i + 8, j, k)] +
+                                     x[IX(i + 7, j - 1, k)] + x[IX(i + 7, j + 1, k)] +
+                                     x[IX(i + 7, j, k - 1)] + x[IX(i + 7, j, k + 1)])) / c;
+        }
+
+        // Processar qualquer elemento restante (se M não for múltiplo de 8)
+        for (; i <= M; i++) {
           int idx = IX(i, j, k);
           int idx_i1 = IX(i - 1, j, k);
           int idx_i2 = IX(i + 1, j, k);
@@ -75,6 +140,7 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
     set_bnd(M, N, O, b, x);
   }
 }
+
 
 
 // Diffusion step (uses implicit method)
