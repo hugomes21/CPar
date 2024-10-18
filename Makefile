@@ -1,4 +1,4 @@
-CPP = g++ -Wall -pg -Ofast -mavx
+CPP = g++ -Wall -pg -Ofast -march=native -mavx -funroll-loops
 SRCS = main.cpp fluid_solver.cpp EventManager.cpp
 
 all:
