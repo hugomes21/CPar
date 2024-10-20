@@ -49,49 +49,62 @@ void add_source(int M, int N, int O, float *x, float *s, float dt) {
 void set_bnd(int M, int N, int O, int b, float *x) {
   int i, j;
 
-  // Set boundary on faces
-  for (i = 1; i <= M; i++) {
-    for (j = 1; j <= N; j++) {
-      x[IX(i, j, 0)] = b == 3 ? -x[IX(i, j, 1)] : x[IX(i, j, 1)];
-      x[IX(i, j, O + 1)] = b == 3 ? -x[IX(i, j, O)] : x[IX(i, j, O)];
-    }
-  }
-  for (i = 1; i <= N; i++) {
-    for (j = 1; j <= O; j++) {
-      x[IX(0, i, j)] = b == 1 ? -x[IX(1, i, j)] : x[IX(1, i, j)];
-      x[IX(M + 1, i, j)] = b == 1 ? -x[IX(M, i, j)] : x[IX(M, i, j)];
-    }
-  }
-  for (i = 1; i <= M; i++) {
-    for (j = 1; j <= O; j++) {
-      x[IX(i, 0, j)] = b == 2 ? -x[IX(i, 1, j)] : x[IX(i, 1, j)];
-      x[IX(i, N + 1, j)] = b == 2 ? -x[IX(i, N, j)] : x[IX(i, N, j)];
+  // Atualizar os limites das faces Z (k = 0 e k = O + 1)
+  for (j = 1; j <= N; j++) {
+    for (i = 1; i <= M; i++) {
+      x[IX(i, j, 0)] = (b == 3) ? -x[IX(i, j, 1)] : x[IX(i, j, 1)];
+      x[IX(i, j, O + 1)] = (b == 3) ? -x[IX(i, j, O)] : x[IX(i, j, O)];
     }
   }
 
-  // Set corners
+  // Atualizar os limites das faces X (i = 0 e i = M + 1)
+  for (j = 1; j <= O; j++) {
+    for (i = 1; i <= N; i++) {
+      x[IX(0, i, j)] = (b == 1) ? -x[IX(1, i, j)] : x[IX(1, i, j)];
+      x[IX(M + 1, i, j)] = (b == 1) ? -x[IX(M, i, j)] : x[IX(M, i, j)];
+    }
+  }
+
+  // Atualizar os limites das faces Y (j = 0 e j = N + 1)
+  for (i = 1; i <= M; i++) {
+    for (j = 1; j <= O; j++) {
+      x[IX(i, 0, j)] = (b == 2) ? -x[IX(i, 1, j)] : x[IX(i, 1, j)];
+      x[IX(i, N + 1, j)] = (b == 2) ? -x[IX(i, N, j)] : x[IX(i, N, j)];
+    }
+  }
+
+  // Atualizar os cantos
   x[IX(0, 0, 0)] = 0.33f * (x[IX(1, 0, 0)] + x[IX(0, 1, 0)] + x[IX(0, 0, 1)]);
-  x[IX(M + 1, 0, 0)] =
-      0.33f * (x[IX(M, 0, 0)] + x[IX(M + 1, 1, 0)] + x[IX(M + 1, 0, 1)]);
-  x[IX(0, N + 1, 0)] =
-      0.33f * (x[IX(1, N + 1, 0)] + x[IX(0, N, 0)] + x[IX(0, N + 1, 1)]);
-  x[IX(M + 1, N + 1, 0)] = 0.33f * (x[IX(M, N + 1, 0)] + x[IX(M + 1, N, 0)] +
-                                    x[IX(M + 1, N + 1, 1)]);
+  x[IX(M + 1, 0, 0)] = 0.33f * (x[IX(M, 0, 0)] + x[IX(M + 1, 1, 0)] + x[IX(M + 1, 0, 1)]);
+  x[IX(0, N + 1, 0)] = 0.33f * (x[IX(1, N + 1, 0)] + x[IX(0, N, 0)] + x[IX(0, N + 1, 1)]);
+  x[IX(M + 1, N + 1, 0)] = 0.33f * (x[IX(M, N + 1, 0)] + x[IX(M + 1, N, 0)] + x[IX(M + 1, N + 1, 1)]);
 }
+
 
 
 inline float calculate_new_value(int i, int j, int k, float *x, float *x0, float a, float c, int M, int N, int O) {
-  // Calcular os índices dos vizinhos de acordo com a função IX()
   int M2 = M + 2;
   int N2 = N + 2;
   int MN2 = M2 * N2;
+
+  // Calcular o índice da posição atual
   int index = i + j * M2 + k * MN2;
 
-  float sum_neighbors = x[index - 1] + x[index + 1] +
-                        x[index - M2] + x[index + M2] +
-                        x[index - MN2] + x[index + MN2];
+  // Acessar os vizinhos diretamente
+  float left = x[index - 1];
+  float right = x[index + 1];
+  float below = x[index - M2];
+  float above = x[index + M2];
+  float back = x[index - MN2];
+  float front = x[index + MN2];
+
+  // Calcular a soma dos vizinhos
+  float sum_neighbors = left + right + below + above + back + front;
+
+  // Calcular e retornar o novo valor
   return (x0[index] + a * sum_neighbors) / c;
 }
+
 
 void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c) {
   int M2 = M + 2;
@@ -99,9 +112,9 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
   int MN2 = M2 * N2;
 
   for (int l = 0; l < LINEARSOLVERTIMES; l++) {
-    for (int i = 1; i <= M; i++) {
-      for (int j = 1; j <= N; j++) {
-        for (int k = 1; k <= O; k++) {
+    for (int k = 1; k <= O; k++) {        // Mudança: primeiro iterar sobre O
+      for (int j = 1; j <= N; j++) {      // Depois sobre N
+        for (int i = 1; i <= M; i++) {    // Finalmente, sobre M
           x[i + j * M2 + k * MN2] = calculate_new_value(i, j, k, x, x0, a, c, M, N, O);
         }
       }
@@ -109,8 +122,6 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
     set_bnd(M, N, O, b, x);
   }
 }
-
-
 
 
 // Diffusion step (uses implicit method)
@@ -206,10 +217,6 @@ void advect(int M, int N, int O, int b, float *d, float *d0, float *u, float *v,
   set_bnd(M, N, O, b, d);
 }
 
-
-
-// Projection step to ensure incompressibility (make the velocity field
-// divergence-free)
 // Projection step to ensure incompressibility (make the velocity field
 // divergence-free)
 void project(int M, int N, int O, float *u, float *v, float *w, float *p, float *div) {
@@ -271,9 +278,6 @@ void project(int M, int N, int O, float *u, float *v, float *w, float *p, float 
   set_bnd(M, N, O, 2, v);
   set_bnd(M, N, O, 3, w);
 }
-
-
-
 
 // Step function for density
 void dens_step(int M, int N, int O, float *x, float *x0, float *u, float *v,
