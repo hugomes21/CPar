@@ -2,13 +2,16 @@
 #include <cmath>
 
 #define IX(i, j, k) ((i) + (M + 2) * (j) + (M + 2) * (N + 2) * (k))
-#define SWAP(x0, x)                                                            \
-  {                                                                            \
-    float *tmp = x0;                                                           \
-    x0 = x;                                                                    \
-    x = tmp;                                                                   \
+inline void SWAP(float *&x0, float *&x)                                        
+  {                                                                           
+    float *tmp = x0;                                                           
+    x0 = x;                                                                    
+    x = tmp;                                                                   
   }
-#define MAX(a, b) (((a) > (b)) ? (a) : (b))
+// Usar uma função inline em vez de uma macro para o MAX
+inline float MAX(float a, float b) {
+  return (a > b) ? a : b;
+}
 #define LINEARSOLVERTIMES 20
 
 // Add sources (density or velocity)
@@ -42,82 +45,29 @@ void add_source(int M, int N, int O, float *x, float *s, float dt) {
   }
 }
 
-
 // Set boundary conditions
 void set_bnd(int M, int N, int O, int b, float *x) {
-  int i = 0, j = 0;
+  int i, j;
 
-  // Set boundary on faces com loop unrolling fator 16
+  // Set boundary on faces
   for (i = 1; i <= M; i++) {
-    for (j = 1; j <= N - 15; j += 16) {
-      // Processar 16 elementos consecutivos
+    for (j = 1; j <= N; j++) {
       x[IX(i, j, 0)] = b == 3 ? -x[IX(i, j, 1)] : x[IX(i, j, 1)];
-      x[IX(i, j + 1, 0)] = b == 3 ? -x[IX(i, j + 1, 1)] : x[IX(i, j + 1, 1)];
-      x[IX(i, j + 2, 0)] = b == 3 ? -x[IX(i, j + 2, 1)] : x[IX(i, j + 2, 1)];
-      x[IX(i, j + 3, 0)] = b == 3 ? -x[IX(i, j + 3, 1)] : x[IX(i, j + 3, 1)];
-      x[IX(i, j + 4, 0)] = b == 3 ? -x[IX(i, j + 4, 1)] : x[IX(i, j + 4, 1)];
-      x[IX(i, j + 5, 0)] = b == 3 ? -x[IX(i, j + 5, 1)] : x[IX(i, j + 5, 1)];
-      x[IX(i, j + 6, 0)] = b == 3 ? -x[IX(i, j + 6, 1)] : x[IX(i, j + 6, 1)];
-      x[IX(i, j + 7, 0)] = b == 3 ? -x[IX(i, j + 7, 1)] : x[IX(i, j + 7, 1)];
-      x[IX(i, j + 8, 0)] = b == 3 ? -x[IX(i, j + 8, 1)] : x[IX(i, j + 8, 1)];
-      x[IX(i, j + 9, 0)] = b == 3 ? -x[IX(i, j + 9, 1)] : x[IX(i, j + 9, 1)];
-      x[IX(i, j + 10, 0)] = b == 3 ? -x[IX(i, j + 10, 1)] : x[IX(i, j + 10, 1)];
-      x[IX(i, j + 11, 0)] = b == 3 ? -x[IX(i, j + 11, 1)] : x[IX(i, j + 11, 1)];
-      x[IX(i, j + 12, 0)] = b == 3 ? -x[IX(i, j + 12, 1)] : x[IX(i, j + 12, 1)];
-      x[IX(i, j + 13, 0)] = b == 3 ? -x[IX(i, j + 13, 1)] : x[IX(i, j + 13, 1)];
-      x[IX(i, j + 14, 0)] = b == 3 ? -x[IX(i, j + 14, 1)] : x[IX(i, j + 14, 1)];
-      x[IX(i, j + 15, 0)] = b == 3 ? -x[IX(i, j + 15, 1)] : x[IX(i, j + 15, 1)];
-    }
-    // Processar elementos restantes
-    for (; j <= N; j++) {
-      x[IX(i, j, 0)] = b == 3 ? -x[IX(i, j, 1)] : x[IX(i, j, 1)];
+      x[IX(i, j, O + 1)] = b == 3 ? -x[IX(i, j, O)] : x[IX(i, j, O)];
     }
   }
-
-  // Aplicar estratégia semelhante aos outros loops
   for (i = 1; i <= N; i++) {
-    for (j = 1; j <= O - 15; j += 16) {
+    for (j = 1; j <= O; j++) {
       x[IX(0, i, j)] = b == 1 ? -x[IX(1, i, j)] : x[IX(1, i, j)];
-      x[IX(0, i, j + 1)] = b == 1 ? -x[IX(1, i, j + 1)] : x[IX(1, i, j + 1)];
-      x[IX(0, i, j + 2)] = b == 1 ? -x[IX(1, i, j + 2)] : x[IX(1, i, j + 2)];
-      x[IX(0, i, j + 3)] = b == 1 ? -x[IX(1, i, j + 3)] : x[IX(1, i, j + 3)];
-      x[IX(0, i, j + 4)] = b == 1 ? -x[IX(1, i, j + 4)] : x[IX(1, i, j + 4)];
-      x[IX(0, i, j + 5)] = b == 1 ? -x[IX(1, i, j + 5)] : x[IX(1, i, j + 5)];
-      x[IX(0, i, j + 6)] = b == 1 ? -x[IX(1, i, j + 6)] : x[IX(1, i, j + 6)];
-      x[IX(0, i, j + 7)] = b == 1 ? -x[IX(1, i, j + 7)] : x[IX(1, i, j + 7)];
-      x[IX(0, i, j + 8)] = b == 1 ? -x[IX(1, i, j + 8)] : x[IX(1, i, j + 8)];
-      x[IX(0, i, j + 9)] = b == 1 ? -x[IX(1, i, j + 9)] : x[IX(1, i, j + 9)];
-      x[IX(0, i, j + 10)] = b == 1 ? -x[IX(1, i, j + 10)] : x[IX(1, i, j + 10)];
-      x[IX(0, i, j + 11)] = b == 1 ? -x[IX(1, i, j + 11)] : x[IX(1, i, j + 11)];
-      x[IX(0, i, j + 12)] = b == 1 ? -x[IX(1, i, j + 12)] : x[IX(1, i, j + 12)];
-      x[IX(0, i, j + 13)] = b == 1 ? -x[IX(1, i, j + 13)] : x[IX(1, i, j + 13)];
-      x[IX(0, i, j + 14)] = b == 1 ? -x[IX(1, i, j + 14)] : x[IX(1, i, j + 14)];
-      x[IX(0, i, j + 15)] = b == 1 ? -x[IX(1, i, j + 15)] : x[IX(1, i, j + 15)];
+      x[IX(M + 1, i, j)] = b == 1 ? -x[IX(M, i, j)] : x[IX(M, i, j)];
     }
   }
-
-  // Faça o mesmo para o terceiro loop
   for (i = 1; i <= M; i++) {
-    for (j = 1; j <= O - 15; j += 16) {
+    for (j = 1; j <= O; j++) {
       x[IX(i, 0, j)] = b == 2 ? -x[IX(i, 1, j)] : x[IX(i, 1, j)];
-      x[IX(i, 0, j + 1)] = b == 2 ? -x[IX(i, 1, j + 1)] : x[IX(i, 1, j + 1)];
-      x[IX(i, 0, j + 2)] = b == 2 ? -x[IX(i, 1, j + 2)] : x[IX(i, 1, j + 2)];
-      x[IX(i, 0, j + 3)] = b == 2 ? -x[IX(i, 1, j + 3)] : x[IX(i, 1, j + 3)];
-      x[IX(i, 0, j + 4)] = b == 2 ? -x[IX(i, 1, j + 4)] : x[IX(i, 1, j + 4)];
-      x[IX(i, 0, j + 5)] = b == 2 ? -x[IX(i, 1, j + 5)] : x[IX(i, 1, j + 5)];
-      x[IX(i, 0, j + 6)] = b == 2 ? -x[IX(i, 1, j + 6)] : x[IX(i, 1, j + 6)];
-      x[IX(i, 0, j + 7)] = b == 2 ? -x[IX(i, 1, j + 7)] : x[IX(i, 1, j + 7)];
-      x[IX(i, 0, j + 8)] = b == 2 ? -x[IX(i, 1, j + 8)] : x[IX(i, 1, j + 8)];
-      x[IX(i, 0, j + 9)] = b == 2 ? -x[IX(i, 1, j + 9)] : x[IX(i,1, j + 9)];
-      x[IX(i, 0, j + 10)] = b == 2 ? -x[IX(i, 1, j + 10)] : x[IX(i, 1, j + 10)];
-      x[IX(i, 0, j + 11)] = b == 2 ? -x[IX(i, 1, j + 11)] : x[IX(i, 1, j + 11)];
-      x[IX(i, 0, j + 12)] = b == 2 ? -x[IX(i, 1, j + 12)] : x[IX(i, 1, j + 12)];
-      x[IX(i, 0, j + 13)] = b == 2 ? -x[IX(i, 1, j + 13)] : x[IX(i, 1, j + 13)];
-      x[IX(i, 0, j + 14)] = b == 2 ? -x[IX(i, 1, j + 14)] : x[IX(i, 1, j + 14)];
-      x[IX(i, 0, j + 15)] = b == 2 ? -x[IX(i, 1, j + 15)] : x[IX(i, 1, j + 15)];
+      x[IX(i, N + 1, j)] = b == 2 ? -x[IX(i, N, j)] : x[IX(i, N, j)];
     }
   }
-
 
   // Set corners
   x[IX(0, 0, 0)] = 0.33f * (x[IX(1, 0, 0)] + x[IX(0, 1, 0)] + x[IX(0, 0, 1)]);
@@ -129,76 +79,37 @@ void set_bnd(int M, int N, int O, int b, float *x) {
                                     x[IX(M + 1, N + 1, 1)]);
 }
 
-// Linear solve for implicit methods (diffusion)
+
+inline float calculate_new_value(int i, int j, int k, float *x, float *x0, float a, float c, int M, int N, int O) {
+  // Calcular os índices dos vizinhos de acordo com a função IX()
+  int M2 = M + 2;
+  int N2 = N + 2;
+  int MN2 = M2 * N2;
+  int index = i + j * M2 + k * MN2;
+
+  float sum_neighbors = x[index - 1] + x[index + 1] +
+                        x[index - M2] + x[index + M2] +
+                        x[index - MN2] + x[index + MN2];
+  return (x0[index] + a * sum_neighbors) / c;
+}
+
 void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c) {
+  int M2 = M + 2;
+  int N2 = N + 2;
+  int MN2 = M2 * N2;
+
   for (int l = 0; l < LINEARSOLVERTIMES; l++) {
-    for (int k = 1; k <= O; k++) {
+    for (int i = 1; i <= M; i++) {
       for (int j = 1; j <= N; j++) {
-        int i;
-        // Loop unrolling com fator 8
-        for (i = 1; i <= M - 7; i += 8) {
-          // Índices para os 8 elementos consecutivos
-          int idx1 = IX(i, j, k);
-          int idx2 = IX(i + 1, j, k);
-          int idx3 = IX(i + 2, j, k);
-          int idx4 = IX(i + 3, j, k);
-          int idx5 = IX(i + 4, j, k);
-          int idx6 = IX(i + 5, j, k);
-          int idx7 = IX(i + 6, j, k);
-          int idx8 = IX(i + 7, j, k);
-
-          // Atualização dos 8 elementos com os cálculos dos vizinhos
-          x[idx1] = (x0[idx1] + a * (x[IX(i - 1, j, k)] + x[IX(i + 1, j, k)] +
-                                     x[IX(i, j - 1, k)] + x[IX(i, j + 1, k)] +
-                                     x[IX(i, j, k - 1)] + x[IX(i, j, k + 1)])) / c;
-
-          x[idx2] = (x0[idx2] + a * (x[IX(i, j, k)] + x[IX(i + 2, j, k)] +
-                                     x[IX(i + 1, j - 1, k)] + x[IX(i + 1, j + 1, k)] +
-                                     x[IX(i + 1, j, k - 1)] + x[IX(i + 1, j, k + 1)])) / c;
-
-          x[idx3] = (x0[idx3] + a * (x[IX(i + 1, j, k)] + x[IX(i + 3, j, k)] +
-                                     x[IX(i + 2, j - 1, k)] + x[IX(i + 2, j + 1, k)] +
-                                     x[IX(i + 2, j, k - 1)] + x[IX(i + 2, j, k + 1)])) / c;
-
-          x[idx4] = (x0[idx4] + a * (x[IX(i + 2, j, k)] + x[IX(i + 4, j, k)] +
-                                     x[IX(i + 3, j - 1, k)] + x[IX(i + 3, j + 1, k)] +
-                                     x[IX(i + 3, j, k - 1)] + x[IX(i + 3, j, k + 1)])) / c;
-
-          x[idx5] = (x0[idx5] + a * (x[IX(i + 3, j, k)] + x[IX(i + 5, j, k)] +
-                                     x[IX(i + 4, j - 1, k)] + x[IX(i + 4, j + 1, k)] +
-                                     x[IX(i + 4, j, k - 1)] + x[IX(i + 4, j, k + 1)])) / c;
-
-          x[idx6] = (x0[idx6] + a * (x[IX(i + 4, j, k)] + x[IX(i + 6, j, k)] +
-                                     x[IX(i + 5, j - 1, k)] + x[IX(i + 5, j + 1, k)] +
-                                     x[IX(i + 5, j, k - 1)] + x[IX(i + 5, j, k + 1)])) / c;
-
-          x[idx7] = (x0[idx7] + a * (x[IX(i + 5, j, k)] + x[IX(i + 7, j, k)] +
-                                     x[IX(i + 6, j - 1, k)] + x[IX(i + 6, j + 1, k)] +
-                                     x[IX(i + 6, j, k - 1)] + x[IX(i + 6, j, k + 1)])) / c;
-
-          x[idx8] = (x0[idx8] + a * (x[IX(i + 6, j, k)] + x[IX(i + 8, j, k)] +
-                                     x[IX(i + 7, j - 1, k)] + x[IX(i + 7, j + 1, k)] +
-                                     x[IX(i + 7, j, k - 1)] + x[IX(i + 7, j, k + 1)])) / c;
-        }
-
-        // Processar qualquer elemento restante (se M não for múltiplo de 8)
-        for (; i <= M; i++) {
-          int idx = IX(i, j, k);
-          int idx_i1 = IX(i - 1, j, k);
-          int idx_i2 = IX(i + 1, j, k);
-          int idx_j1 = IX(i, j - 1, k);
-          int idx_j2 = IX(i, j + 1, k);
-          int idx_k1 = IX(i, j, k - 1);
-          int idx_k2 = IX(i, j, k + 1);
-          x[idx] = (x0[idx] + a * (x[idx_i1] + x[idx_i2] +
-                                   x[idx_j1] + x[idx_j2] +
-                                   x[idx_k1] + x[idx_k2])) / c;
+        for (int k = 1; k <= O; k++) {
+          x[i + j * M2 + k * MN2] = calculate_new_value(i, j, k, x, x0, a, c, M, N, O);
         }
       }
     }
     set_bnd(M, N, O, b, x);
   }
 }
+
 
 
 
@@ -215,12 +126,52 @@ void advect(int M, int N, int O, int b, float *d, float *d0, float *u, float *v,
             float *w, float dt) {
   float dtX = dt * M, dtY = dt * N, dtZ = dt * O;
 
-  for (int i = 1; i <= M; i++) {
+  for (int k = 1; k <= O; k++) {
     for (int j = 1; j <= N; j++) {
-      for (int k = 1; k <= O; k++) {
-        float x = i - dtX * u[IX(i, j, k)];
-        float y = j - dtY * v[IX(i, j, k)];
-        float z = k - dtZ * w[IX(i, j, k)];
+      int i;
+      // Unrolling the loop by a factor of 4
+      for (i = 1; i <= M - 3; i += 4) {
+        for (int uroll = 0; uroll < 4; ++uroll) {
+          int idx = IX(i + uroll, j, k);
+          float x = (i + uroll) - dtX * u[idx];
+          float y = j - dtY * v[idx];
+          float z = k - dtZ * w[idx];
+
+          // Clamp to grid boundaries
+          if (x < 0.5f)
+            x = 0.5f;
+          if (x > M + 0.5f)
+            x = M + 0.5f;
+          if (y < 0.5f)
+            y = 0.5f;
+          if (y > N + 0.5f)
+            y = N + 0.5f;
+          if (z < 0.5f)
+            z = 0.5f;
+          if (z > O + 0.5f)
+            z = O + 0.5f;
+
+          int i0 = (int)x, i1 = i0 + 1;
+          int j0 = (int)y, j1 = j0 + 1;
+          int k0 = (int)z, k1 = k0 + 1;
+
+          float s1 = x - i0, s0 = 1 - s1;
+          float t1 = y - j0, t0 = 1 - t1;
+          float u1 = z - k0, u0 = 1 - u1;
+
+          d[idx] =
+              s0 * (t0 * (u0 * d0[IX(i0, j0, k0)] + u1 * d0[IX(i0, j0, k1)]) +
+                    t1 * (u0 * d0[IX(i0, j1, k0)] + u1 * d0[IX(i0, j1, k1)])) +
+              s1 * (t0 * (u0 * d0[IX(i1, j0, k0)] + u1 * d0[IX(i1, j0, k1)]) +
+                    t1 * (u0 * d0[IX(i1, j1, k0)] + u1 * d0[IX(i1, j1, k1)]));
+        }
+      }
+      // Handle the remaining elements
+      for (; i <= M; i++) {
+        int idx = IX(i, j, k);
+        float x = i - dtX * u[idx];
+        float y = j - dtY * v[idx];
+        float z = k - dtZ * w[idx];
 
         // Clamp to grid boundaries
         if (x < 0.5f)
@@ -244,7 +195,7 @@ void advect(int M, int N, int O, int b, float *d, float *d0, float *u, float *v,
         float t1 = y - j0, t0 = 1 - t1;
         float u1 = z - k0, u0 = 1 - u1;
 
-        d[IX(i, j, k)] =
+        d[idx] =
             s0 * (t0 * (u0 * d0[IX(i0, j0, k0)] + u1 * d0[IX(i0, j0, k1)]) +
                   t1 * (u0 * d0[IX(i0, j1, k0)] + u1 * d0[IX(i0, j1, k1)])) +
             s1 * (t0 * (u0 * d0[IX(i1, j0, k0)] + u1 * d0[IX(i1, j0, k1)]) +
@@ -255,26 +206,30 @@ void advect(int M, int N, int O, int b, float *d, float *d0, float *u, float *v,
   set_bnd(M, N, O, b, d);
 }
 
+
+
+// Projection step to ensure incompressibility (make the velocity field
+// divergence-free)
 // Projection step to ensure incompressibility (make the velocity field
 // divergence-free)
 void project(int M, int N, int O, float *u, float *v, float *w, float *p, float *div) {
   // Primeira parte: cálculo de div e inicialização de p
-  for (int i = 1; i <= M; i++) {
+  for (int k = 1; k <= O; k++) {
     for (int j = 1; j <= N; j++) {
-      int k;
-      // Unroll o loop de k com fator 16
-      for (k = 1; k <= O - 15; k += 16) {
+      int i;
+      // Unroll o loop de i com fator 16
+      for (i = 1; i <= M - 15; i += 16) {
         // Atualizar 16 elementos de div e p
         for (int offset = 0; offset < 16; offset++) {
-          int idx = IX(i, j, k + offset);
-          div[idx] = -0.5f * (u[IX(i + 1, j, k + offset)] - u[IX(i - 1, j, k + offset)] +
-                              v[IX(i, j + 1, k + offset)] - v[IX(i, j - 1, k + offset)] +
-                              w[IX(i, j, k + offset + 1)] - w[IX(i, j, k + offset - 1)]) / MAX(M, MAX(N, O));
+          int idx = IX(i + offset, j, k);
+          div[idx] = -0.5f * (u[IX(i + offset + 1, j, k)] - u[IX(i + offset - 1, j, k)] +
+                              v[IX(i + offset, j + 1, k)] - v[IX(i + offset, j - 1, k)] +
+                              w[IX(i + offset, j, k + 1)] - w[IX(i + offset, j, k - 1)]) / MAX(M, MAX(N, O));
           p[idx] = 0;
         }
       }
       // Processar elementos restantes (se houver)
-      for (; k <= O; k++) {
+      for (; i <= M; i++) {
         int idx = IX(i, j, k);
         div[idx] = -0.5f * (u[IX(i + 1, j, k)] - u[IX(i - 1, j, k)] +
                             v[IX(i, j + 1, k)] - v[IX(i, j - 1, k)] +
@@ -289,21 +244,21 @@ void project(int M, int N, int O, float *u, float *v, float *w, float *p, float 
   lin_solve(M, N, O, 0, p, div, 1, 6);
 
   // Segunda parte: atualização de u, v e w
-  for (int i = 1; i <= M; i++) {
+  for (int k = 1; k <= O; k++) {
     for (int j = 1; j <= N; j++) {
-      int k;
-      // Unroll o loop de k com fator 16
-      for (k = 1; k <= O - 15; k += 16) {
+      int i;
+      // Unroll o loop de i com fator 16
+      for (i = 1; i <= M - 15; i += 16) {
         // Atualizar 16 elementos de u, v e w
         for (int offset = 0; offset < 16; offset++) {
-          int idx = IX(i, j, k + offset);
-          u[idx] -= 0.5f * (p[IX(i + 1, j, k + offset)] - p[IX(i - 1, j, k + offset)]);
-          v[idx] -= 0.5f * (p[IX(i, j + 1, k + offset)] - p[IX(i, j - 1, k + offset)]);
-          w[idx] -= 0.5f * (p[IX(i, j, k + offset + 1)] - p[IX(i, j, k + offset - 1)]);
+          int idx = IX(i + offset, j, k);
+          u[idx] -= 0.5f * (p[IX(i + offset + 1, j, k)] - p[IX(i + offset - 1, j, k)]);
+          v[idx] -= 0.5f * (p[IX(i + offset, j + 1, k)] - p[IX(i + offset, j - 1, k)]);
+          w[idx] -= 0.5f * (p[IX(i + offset, j, k + 1)] - p[IX(i + offset, j, k - 1)]);
         }
       }
       // Processar elementos restantes (se houver)
-      for (; k <= O; k++) {
+      for (; i <= M; i++) {
         int idx = IX(i, j, k);
         u[idx] -= 0.5f * (p[IX(i + 1, j, k)] - p[IX(i - 1, j, k)]);
         v[idx] -= 0.5f * (p[IX(i, j + 1, k)] - p[IX(i, j - 1, k)]);
@@ -316,6 +271,8 @@ void project(int M, int N, int O, float *u, float *v, float *w, float *p, float 
   set_bnd(M, N, O, 2, v);
   set_bnd(M, N, O, 3, w);
 }
+
+
 
 
 // Step function for density
