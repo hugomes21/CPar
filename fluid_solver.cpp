@@ -105,17 +105,34 @@ inline float calculate_new_value(int i, int j, int k, float *x, float *x0, float
   return (x0[index] + a * sum_neighbors) / c;
 }
 
-
+// Utilização de blocking (testar amanhã)
 void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c) {
   int M2 = M + 2;
   int N2 = N + 2;
   int MN2 = M2 * N2;
 
+  int block_size_i = 8;  
+  int block_size_j = 8;  
+  int block_size_k = 8;  
+
   for (int l = 0; l < LINEARSOLVERTIMES; l++) {
-    for (int k = 1; k <= O; k++) {        // Mudança: primeiro iterar sobre O
-      for (int j = 1; j <= N; j++) {      // Depois sobre N
-        for (int i = 1; i <= M; i++) {    // Finalmente, sobre M
-          x[i + j * M2 + k * MN2] = calculate_new_value(i, j, k, x, x0, a, c, M, N, O);
+
+    // Loop over blocks
+    for (int kk = 1; kk <= O; kk += block_size_k) {
+      for (int jj = 1; jj <= N; jj += block_size_j) {
+        for (int ii = 1; ii <= M; ii += block_size_i) {
+
+          // Dentro de cada bloco, iterar sobre os elementos
+          for (int k = kk; k < kk + block_size_k && k <= O; k++) {
+            for (int j = jj; j < jj + block_size_j && j <= N; j++) {
+              for (int i = ii; i < ii + block_size_i && i <= M; i+=4) {
+                x[i + j * M2 + k * MN2] = calculate_new_value(i, j, k, x, x0, a, c, M, N, O);
+                x[i + 1 + j * M2 + k * MN2] = calculate_new_value(i + 1, j, k, x, x0, a, c, M, N, O);
+                x[i + 2 + j * M2 + k * MN2] = calculate_new_value(i + 2, j, k, x, x0, a, c, M, N, O);
+                x[i + 3 + j * M2 + k * MN2] = calculate_new_value(i + 3, j, k, x, x0, a, c, M, N, O);
+              }
+            }
+          }
         }
       }
     }
@@ -124,124 +141,96 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
 }
 
 
+
 // Diffusion step (uses implicit method)
-void diffuse(int M, int N, int O, int b, float *x, float *x0, float diff,
-             float dt) {
+void diffuse(int M, int N, int O, int b, float *x, float *x0, float diff, float dt) {
   int max = MAX(MAX(M, N), O);
   float a = dt * diff * max * max;
   lin_solve(M, N, O, b, x, x0, a, 1 + 6 * a);
 }
 
 // Advection step (uses velocity field to move quantities)
-void advect(int M, int N, int O, int b, float *d, float *d0, float *u, float *v,
-            float *w, float dt) {
+void advect(int M, int N, int O, int b, float *d, float *d0, float *u, float *v, float *w, float dt) {
   float dtX = dt * M, dtY = dt * N, dtZ = dt * O;
 
-  for (int k = 1; k <= O; k++) {
-    for (int j = 1; j <= N; j++) {
-      int i;
-      // Unrolling the loop by a factor of 4
-      for (i = 1; i <= M - 3; i += 4) {
-        for (int uroll = 0; uroll < 4; ++uroll) {
-          int idx = IX(i + uroll, j, k);
-          float x = (i + uroll) - dtX * u[idx];
-          float y = j - dtY * v[idx];
-          float z = k - dtZ * w[idx];
+  // Definir tamanhos dos blocos
+  int block_size_i = 8;
+  int block_size_j = 8;
+  int block_size_k = 8;
 
-          // Clamp to grid boundaries
-          if (x < 0.5f)
-            x = 0.5f;
-          if (x > M + 0.5f)
-            x = M + 0.5f;
-          if (y < 0.5f)
-            y = 0.5f;
-          if (y > N + 0.5f)
-            y = N + 0.5f;
-          if (z < 0.5f)
-            z = 0.5f;
-          if (z > O + 0.5f)
-            z = O + 0.5f;
+  for (int kk = 1; kk <= O; kk += block_size_k) {
+    for (int jj = 1; jj <= N; jj += block_size_j) {
+      for (int ii = 1; ii <= M; ii += block_size_i) {
+        // Dentro de cada bloco, iterar sobre os elementos
+        for (int k = kk; k < kk + block_size_k && k <= O; k++) {
+          for (int j = jj; j < jj + block_size_j && j <= N; j++) {
+            for (int i = ii; i < ii + block_size_i && i <= M; i++) {
+              int idx = IX(i, j, k);
+              float x = i - dtX * u[idx];
+              float y = j - dtY * v[idx];
+              float z = k - dtZ * w[idx];
 
-          int i0 = (int)x, i1 = i0 + 1;
-          int j0 = (int)y, j1 = j0 + 1;
-          int k0 = (int)z, k1 = k0 + 1;
+              // Clamping nas fronteiras da grade
+              if (x < 0.5f)
+                x = 0.5f;
+              if (x > M + 0.5f)
+                x = M + 0.5f;
+              if (y < 0.5f)
+                y = 0.5f;
+              if (y > N + 0.5f)
+                y = N + 0.5f;
+              if (z < 0.5f)
+                z = 0.5f;
+              if (z > O + 0.5f)
+                z = O + 0.5f;
 
-          float s1 = x - i0, s0 = 1 - s1;
-          float t1 = y - j0, t0 = 1 - t1;
-          float u1 = z - k0, u0 = 1 - u1;
+              int i0 = (int)x, i1 = i0 + 1;
+              int j0 = (int)y, j1 = j0 + 1;
+              int k0 = (int)z, k1 = k0 + 1;
 
-          d[idx] =
-              s0 * (t0 * (u0 * d0[IX(i0, j0, k0)] + u1 * d0[IX(i0, j0, k1)]) +
-                    t1 * (u0 * d0[IX(i0, j1, k0)] + u1 * d0[IX(i0, j1, k1)])) +
-              s1 * (t0 * (u0 * d0[IX(i1, j0, k0)] + u1 * d0[IX(i1, j0, k1)]) +
-                    t1 * (u0 * d0[IX(i1, j1, k0)] + u1 * d0[IX(i1, j1, k1)]));
+              float s1 = x - i0, s0 = 1 - s1;
+              float t1 = y - j0, t0 = 1 - t1;
+              float u1 = z - k0, u0 = 1 - u1;
+
+              d[idx] =
+                  s0 * (t0 * (u0 * d0[IX(i0, j0, k0)] + u1 * d0[IX(i0, j0, k1)]) +
+                        t1 * (u0 * d0[IX(i0, j1, k0)] + u1 * d0[IX(i0, j1, k1)])) +
+                  s1 * (t0 * (u0 * d0[IX(i1, j0, k0)] + u1 * d0[IX(i1, j0, k1)]) +
+                        t1 * (u0 * d0[IX(i1, j1, k0)] + u1 * d0[IX(i1, j1, k1)]));
+            }
+          }
         }
-      }
-      // Handle the remaining elements
-      for (; i <= M; i++) {
-        int idx = IX(i, j, k);
-        float x = i - dtX * u[idx];
-        float y = j - dtY * v[idx];
-        float z = k - dtZ * w[idx];
-
-        // Clamp to grid boundaries
-        if (x < 0.5f)
-          x = 0.5f;
-        if (x > M + 0.5f)
-          x = M + 0.5f;
-        if (y < 0.5f)
-          y = 0.5f;
-        if (y > N + 0.5f)
-          y = N + 0.5f;
-        if (z < 0.5f)
-          z = 0.5f;
-        if (z > O + 0.5f)
-          z = O + 0.5f;
-
-        int i0 = (int)x, i1 = i0 + 1;
-        int j0 = (int)y, j1 = j0 + 1;
-        int k0 = (int)z, k1 = k0 + 1;
-
-        float s1 = x - i0, s0 = 1 - s1;
-        float t1 = y - j0, t0 = 1 - t1;
-        float u1 = z - k0, u0 = 1 - u1;
-
-        d[idx] =
-            s0 * (t0 * (u0 * d0[IX(i0, j0, k0)] + u1 * d0[IX(i0, j0, k1)]) +
-                  t1 * (u0 * d0[IX(i0, j1, k0)] + u1 * d0[IX(i0, j1, k1)])) +
-            s1 * (t0 * (u0 * d0[IX(i1, j0, k0)] + u1 * d0[IX(i1, j0, k1)]) +
-                  t1 * (u0 * d0[IX(i1, j1, k0)] + u1 * d0[IX(i1, j1, k1)]));
       }
     }
   }
   set_bnd(M, N, O, b, d);
 }
 
+
 // Projection step to ensure incompressibility (make the velocity field
 // divergence-free)
 void project(int M, int N, int O, float *u, float *v, float *w, float *p, float *div) {
+  // Tamanhos dos blocos
+  int block_size_i = 8;
+  int block_size_j = 8;
+  int block_size_k = 8;
+
   // Primeira parte: cálculo de div e inicialização de p
-  for (int k = 1; k <= O; k++) {
-    for (int j = 1; j <= N; j++) {
-      int i;
-      // Unroll o loop de i com fator 16
-      for (i = 1; i <= M - 15; i += 16) {
-        // Atualizar 16 elementos de div e p
-        for (int offset = 0; offset < 16; offset++) {
-          int idx = IX(i + offset, j, k);
-          div[idx] = -0.5f * (u[IX(i + offset + 1, j, k)] - u[IX(i + offset - 1, j, k)] +
-                              v[IX(i + offset, j + 1, k)] - v[IX(i + offset, j - 1, k)] +
-                              w[IX(i + offset, j, k + 1)] - w[IX(i + offset, j, k - 1)]) / MAX(M, MAX(N, O));
-          p[idx] = 0;
+  for (int kk = 1; kk <= O; kk += block_size_k) {
+    for (int jj = 1; jj <= N; jj += block_size_j) {
+      for (int ii = 1; ii <= M; ii += block_size_i) {
+        // Iterar sobre os elementos do bloco
+        for (int k = kk; k < kk + block_size_k && k <= O; k++) {
+          for (int j = jj; j < jj + block_size_j && j <= N; j++) {
+            for (int i = ii; i < ii + block_size_i && i <= M; i++) {
+              int idx = IX(i, j, k);
+              div[idx] = -0.5f * (u[IX(i + 1, j, k)] - u[IX(i - 1, j, k)] +
+                                  v[IX(i, j + 1, k)] - v[IX(i, j - 1, k)] +
+                                  w[IX(i, j, k + 1)] - w[IX(i, j, k - 1)]) / MAX(M, MAX(N, O));
+              p[idx] = 0;
+            }
+          }
         }
-      }
-      // Processar elementos restantes (se houver)
-      for (; i <= M; i++) {
-        int idx = IX(i, j, k);
-        div[idx] = -0.5f * (u[IX(i + 1, j, k)] - u[IX(i - 1, j, k)] +
-                            v[IX(i, j + 1, k)] - v[IX(i, j - 1, k)] +
-                            w[IX(i, j, k + 1)] - w[IX(i, j, k - 1)]) / MAX(M, MAX(N, O));
-        p[idx] = 0;
       }
     }
   }
@@ -251,25 +240,20 @@ void project(int M, int N, int O, float *u, float *v, float *w, float *p, float 
   lin_solve(M, N, O, 0, p, div, 1, 6);
 
   // Segunda parte: atualização de u, v e w
-  for (int k = 1; k <= O; k++) {
-    for (int j = 1; j <= N; j++) {
-      int i;
-      // Unroll o loop de i com fator 16
-      for (i = 1; i <= M - 15; i += 16) {
-        // Atualizar 16 elementos de u, v e w
-        for (int offset = 0; offset < 16; offset++) {
-          int idx = IX(i + offset, j, k);
-          u[idx] -= 0.5f * (p[IX(i + offset + 1, j, k)] - p[IX(i + offset - 1, j, k)]);
-          v[idx] -= 0.5f * (p[IX(i + offset, j + 1, k)] - p[IX(i + offset, j - 1, k)]);
-          w[idx] -= 0.5f * (p[IX(i + offset, j, k + 1)] - p[IX(i + offset, j, k - 1)]);
+  for (int kk = 1; kk <= O; kk += block_size_k) {
+    for (int jj = 1; jj <= N; jj += block_size_j) {
+      for (int ii = 1; ii <= M; ii += block_size_i) {
+        // Iterar sobre os elementos do bloco
+        for (int k = kk; k < kk + block_size_k && k <= O; k++) {
+          for (int j = jj; j < jj + block_size_j && j <= N; j++) {
+            for (int i = ii; i < ii + block_size_i && i <= M; i++) {
+              int idx = IX(i, j, k);
+              u[idx] -= 0.5f * (p[IX(i + 1, j, k)] - p[IX(i - 1, j, k)]);
+              v[idx] -= 0.5f * (p[IX(i, j + 1, k)] - p[IX(i, j - 1, k)]);
+              w[idx] -= 0.5f * (p[IX(i, j, k + 1)] - p[IX(i, j, k - 1)]);
+            }
+          }
         }
-      }
-      // Processar elementos restantes (se houver)
-      for (; i <= M; i++) {
-        int idx = IX(i, j, k);
-        u[idx] -= 0.5f * (p[IX(i + 1, j, k)] - p[IX(i - 1, j, k)]);
-        v[idx] -= 0.5f * (p[IX(i, j + 1, k)] - p[IX(i, j - 1, k)]);
-        w[idx] -= 0.5f * (p[IX(i, j, k + 1)] - p[IX(i, j, k - 1)]);
       }
     }
   }
@@ -278,6 +262,7 @@ void project(int M, int N, int O, float *u, float *v, float *w, float *p, float 
   set_bnd(M, N, O, 2, v);
   set_bnd(M, N, O, 3, w);
 }
+
 
 // Step function for density
 void dens_step(int M, int N, int O, float *x, float *x0, float *u, float *v,
