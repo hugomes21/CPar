@@ -1,4 +1,5 @@
 #include "fluid_solver.h"
+#include <omp.h>
 #include <cmath>
 
 #define IX(i, j, k) ((i) + (M + 2) * (j) + (M + 2) * (N + 2) * (k))
@@ -81,7 +82,7 @@ void set_bnd(int M, int N, int O, int b, float *x) {
 }
 
 
-
+/*
 inline float calculate_new_value(int i, int j, int k, float *x, float *x0, float a, float c, int M, int N, int O) {
   int M2 = M + 2;
   int N2 = N + 2;
@@ -105,7 +106,6 @@ inline float calculate_new_value(int i, int j, int k, float *x, float *x0, float
   return (x0[index] + a * sum_neighbors) / c;
 }
 
-// Utilização de blocking (testar amanhã)
 void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c) {
   int M2 = M + 2;
   int N2 = N + 2;
@@ -139,6 +139,65 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
     set_bnd(M, N, O, b, x);
   }
 }
+*/
+
+
+// red-black solver with convergence check
+void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c) {
+    float tol = 1e-7, max_c, old_x, change;
+    int l = 0, blockSize = 8;
+
+    do {
+        max_c = 0.0f;
+
+        // Primeira fase: Células vermelhas
+        #pragma omp parallel for collapse(3) reduction(max:max_c) private(old_x, change)
+        for (int kk = 1; kk <= O; kk += blockSize) {
+            for (int jj = 1; jj <= N; jj += blockSize) {
+                for (int ii = 1; ii <= M; ii += blockSize) {
+                    for (int k = kk; k < kk + blockSize && k <= O; k++) {
+                        for (int j = jj; j < jj + blockSize && j <= N; j++) {
+                            for (int i = ii + (j + k) % 2; i < ii + blockSize && i <= M; i += 2) {
+                                old_x = x[IX(i, j, k)];
+                                x[IX(i, j, k)] = (x0[IX(i, j, k)] +
+                                                  a * (x[IX(i - 1, j, k)] + x[IX(i + 1, j, k)] +
+                                                       x[IX(i, j - 1, k)] + x[IX(i, j + 1, k)] +
+                                                       x[IX(i, j, k - 1)] + x[IX(i, j, k + 1)])) / c;
+                                change = fabs(x[IX(i, j, k)] - old_x);
+                                if (change > max_c) max_c = change;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Segunda fase: Células pretas
+        #pragma omp parallel for collapse(3) reduction(max:max_c) private(old_x, change)
+        for (int kk = 1; kk <= O; kk += blockSize) {
+            for (int jj = 1; jj <= N; jj += blockSize) {
+                for (int ii = 1; ii <= M; ii += blockSize) {
+                    for (int k = kk; k < kk + blockSize && k <= O; k++) {
+                        for (int j = jj; j < jj + blockSize && j <= N; j++) {
+                            for (int i = ii + (j + k + 1) % 2; i < ii + blockSize && i <= M; i += 2) {
+                                old_x = x[IX(i, j, k)];
+                                x[IX(i, j, k)] = (x0[IX(i, j, k)] +
+                                                  a * (x[IX(i - 1, j, k)] + x[IX(i + 1, j, k)] +
+                                                       x[IX(i, j - 1, k)] + x[IX(i, j + 1, k)] +
+                                                       x[IX(i, j, k - 1)] + x[IX(i, j, k + 1)])) / c;
+                                change = fabs(x[IX(i, j, k)] - old_x);
+                                if (change > max_c) max_c = change;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        set_bnd(M, N, O, b, x);
+    } while (max_c > tol && ++l < 20);
+}
+
 
 
 
@@ -210,23 +269,39 @@ void advect(int M, int N, int O, int b, float *d, float *d0, float *u, float *v,
 // Projection step to ensure incompressibility (make the velocity field
 // divergence-free)
 void project(int M, int N, int O, float *u, float *v, float *w, float *p, float *div) {
-  // Tamanhos dos blocos
+  int M2 = M + 2;
+  int N2 = N + 2;
+  int MN2 = M2 * N2;
+
   int block_size_i = 8;
   int block_size_j = 8;
   int block_size_k = 8;
 
-  // Primeira parte: cálculo de div e inicialização de p
+  // Primeira parte: cálculo de div e inicialização de p com loop unrolling
   for (int kk = 1; kk <= O; kk += block_size_k) {
     for (int jj = 1; jj <= N; jj += block_size_j) {
       for (int ii = 1; ii <= M; ii += block_size_i) {
-        // Iterar sobre os elementos do bloco
         for (int k = kk; k < kk + block_size_k && k <= O; k++) {
           for (int j = jj; j < jj + block_size_j && j <= N; j++) {
-            for (int i = ii; i < ii + block_size_i && i <= M; i++) {
-              int idx = IX(i, j, k);
-              div[idx] = -0.5f * (u[IX(i + 1, j, k)] - u[IX(i - 1, j, k)] +
-                                  v[IX(i, j + 1, k)] - v[IX(i, j - 1, k)] +
-                                  w[IX(i, j, k + 1)] - w[IX(i, j, k - 1)]) / MAX(M, MAX(N, O));
+            int i;
+            // Loop unrolling por um fator de 8
+            for (i = ii; i <= M - 7 && i < ii + block_size_i; i += 8) {
+              for (int offset = 0; offset < 8; ++offset) {
+                int idx = (i + offset) + j * M2 + k * MN2;
+                div[idx] = -0.5f * (u[(i + offset + 1) + j * M2 + k * MN2] - u[(i + offset - 1) + j * M2 + k * MN2] +
+                                    v[(i + offset) + (j + 1) * M2 + k * MN2] - v[(i + offset) + (j - 1) * M2 + k * MN2] +
+                                    w[(i + offset) + j * M2 + (k + 1) * MN2] - w[(i + offset) + j * M2 + (k - 1) * MN2]) 
+                          / MAX(M, MAX(N, O));
+                p[idx] = 0;
+              }
+            }
+            // Elementos restantes
+            for (; i <= M && i < ii + block_size_i; i++) {
+              int idx = i + j * M2 + k * MN2;
+              div[idx] = -0.5f * (u[(i + 1) + j * M2 + k * MN2] - u[(i - 1) + j * M2 + k * MN2] +
+                                  v[i + (j + 1) * M2 + k * MN2] - v[i + (j - 1) * M2 + k * MN2] +
+                                  w[i + j * M2 + (k + 1) * MN2] - w[i + j * M2 + (k - 1) * MN2]) 
+                        / MAX(M, MAX(N, O));
               p[idx] = 0;
             }
           }
@@ -239,18 +314,28 @@ void project(int M, int N, int O, float *u, float *v, float *w, float *p, float 
   set_bnd(M, N, O, 0, p);
   lin_solve(M, N, O, 0, p, div, 1, 6);
 
-  // Segunda parte: atualização de u, v e w
+  // Segunda parte: atualização de u, v e w com loop unrolling
   for (int kk = 1; kk <= O; kk += block_size_k) {
     for (int jj = 1; jj <= N; jj += block_size_j) {
       for (int ii = 1; ii <= M; ii += block_size_i) {
-        // Iterar sobre os elementos do bloco
         for (int k = kk; k < kk + block_size_k && k <= O; k++) {
           for (int j = jj; j < jj + block_size_j && j <= N; j++) {
-            for (int i = ii; i < ii + block_size_i && i <= M; i++) {
-              int idx = IX(i, j, k);
-              u[idx] -= 0.5f * (p[IX(i + 1, j, k)] - p[IX(i - 1, j, k)]);
-              v[idx] -= 0.5f * (p[IX(i, j + 1, k)] - p[IX(i, j - 1, k)]);
-              w[idx] -= 0.5f * (p[IX(i, j, k + 1)] - p[IX(i, j, k - 1)]);
+            int i;
+            // Loop unrolling por um fator de 8
+            for (i = ii; i <= M - 7 && i < ii + block_size_i; i += 8) {
+              for (int offset = 0; offset < 8; ++offset) {
+                int idx = (i + offset) + j * M2 + k * MN2;
+                u[idx] -= 0.5f * (p[(i + offset + 1) + j * M2 + k * MN2] - p[(i + offset - 1) + j * M2 + k * MN2]);
+                v[idx] -= 0.5f * (p[(i + offset) + (j + 1) * M2 + k * MN2] - p[(i + offset) + (j - 1) * M2 + k * MN2]);
+                w[idx] -= 0.5f * (p[(i + offset) + j * M2 + (k + 1) * MN2] - p[(i + offset) + j * M2 + (k - 1) * MN2]);
+              }
+            }
+            // Elementos restantes
+            for (; i <= M && i < ii + block_size_i; i++) {
+              int idx = i + j * M2 + k * MN2;
+              u[idx] -= 0.5f * (p[(i + 1) + j * M2 + k * MN2] - p[(i - 1) + j * M2 + k * MN2]);
+              v[idx] -= 0.5f * (p[i + (j + 1) * M2 + k * MN2] - p[i + (j - 1) * M2 + k * MN2]);
+              w[idx] -= 0.5f * (p[i + j * M2 + (k + 1) * MN2] - p[i + j * M2 + (k - 1) * MN2]);
             }
           }
         }
@@ -262,6 +347,8 @@ void project(int M, int N, int O, float *u, float *v, float *w, float *p, float 
   set_bnd(M, N, O, 2, v);
   set_bnd(M, N, O, 3, w);
 }
+
+
 
 
 // Step function for density
