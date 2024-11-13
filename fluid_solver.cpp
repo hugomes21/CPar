@@ -82,7 +82,7 @@ void set_bnd(int M, int N, int O, int b, float *x) {
 }
 
 
-/*
+
 inline float calculate_new_value(int i, int j, int k, float *x, float *x0, float a, float c, int M, int N, int O) {
   int M2 = M + 2;
   int N2 = N + 2;
@@ -106,6 +106,7 @@ inline float calculate_new_value(int i, int j, int k, float *x, float *x0, float
   return (x0[index] + a * sum_neighbors) / c;
 }
 
+/*
 void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c) {
   int M2 = M + 2;
   int N2 = N + 2;
@@ -142,7 +143,6 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
 */
 
 
-// red-black solver with convergence check
 void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c) {
     float tol = 1e-7, max_c, old_x, change;
     int l = 0, blockSize = 8;
@@ -150,44 +150,43 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
     do {
         max_c = 0.0f;
 
-        // Primeira fase: Células vermelhas
-        #pragma omp parallel for collapse(3) reduction(max:max_c) private(old_x, change)
+        // Red phase
+        #pragma omp parallel for collapse(2) reduction(max:max_c) private(old_x, change)
         for (int kk = 1; kk <= O; kk += blockSize) {
             for (int jj = 1; jj <= N; jj += blockSize) {
-                for (int ii = 1; ii <= M; ii += blockSize) {
-                    for (int k = kk; k < kk + blockSize && k <= O; k++) {
-                        for (int j = jj; j < jj + blockSize && j <= N; j++) {
-                            for (int i = ii + (j + k) % 2; i < ii + blockSize && i <= M; i += 2) {
-                                old_x = x[IX(i, j, k)];
-                                x[IX(i, j, k)] = (x0[IX(i, j, k)] +
-                                                  a * (x[IX(i - 1, j, k)] + x[IX(i + 1, j, k)] +
-                                                       x[IX(i, j - 1, k)] + x[IX(i, j + 1, k)] +
-                                                       x[IX(i, j, k - 1)] + x[IX(i, j, k + 1)])) / c;
-                                change = fabs(x[IX(i, j, k)] - old_x);
-                                if (change > max_c) max_c = change;
-                            }
+                for (int k = kk; k < std::min(kk + blockSize, O + 1); k++) {
+                    for (int j = jj; j < std::min(jj + blockSize, N + 1); j++) {
+                        int start_i = 1 + (j + k) % 2;
+
+                        for (int i = start_i; i <= M; i += 2) {
+                            int idx = IX(i, j, k);
+                            old_x = x[idx]; 
+                            //#pragma omp simd aligned(x, x0:64)  // Alinha os dados com o cache
+                            x[idx] = calculate_new_value(i, j, k, x, x0, a, c, M, N, O);
+                            change = fabs(x[idx] - old_x);
+                            if (change > max_c) max_c = change;
                         }
                     }
                 }
             }
         }
 
-        // Segunda fase: Células pretas
-        #pragma omp parallel for collapse(3) reduction(max:max_c) private(old_x, change)
+        // Ensure synchronization between red and black phases
+        #pragma omp barrier
+
+        // Black phase
+        #pragma omp parallel for collapse(2) reduction(max:max_c) private(old_x, change)
         for (int kk = 1; kk <= O; kk += blockSize) {
             for (int jj = 1; jj <= N; jj += blockSize) {
-                for (int ii = 1; ii <= M; ii += blockSize) {
-                    for (int k = kk; k < kk + blockSize && k <= O; k++) {
-                        for (int j = jj; j < jj + blockSize && j <= N; j++) {
-                            for (int i = ii + (j + k + 1) % 2; i < ii + blockSize && i <= M; i += 2) {
-                                old_x = x[IX(i, j, k)];
-                                x[IX(i, j, k)] = (x0[IX(i, j, k)] +
-                                                  a * (x[IX(i - 1, j, k)] + x[IX(i + 1, j, k)] +
-                                                       x[IX(i, j - 1, k)] + x[IX(i, j + 1, k)] +
-                                                       x[IX(i, j, k - 1)] + x[IX(i, j, k + 1)])) / c;
-                                change = fabs(x[IX(i, j, k)] - old_x);
-                                if (change > max_c) max_c = change;
-                            }
+                for (int k = kk; k < std::min(kk + blockSize, O + 1); k++) {
+                    for (int j = jj; j < std::min(jj + blockSize, N + 1); j++) {
+                        int start_i = 2 - (j + k) % 2;  // Black cells start
+                        for (int i = start_i; i <= M; i += 2) {
+                            int idx = IX(i, j, k);
+                            old_x = x[idx]; 
+                            x[idx] = calculate_new_value(i, j, k, x, x0, a, c, M, N, O);
+                            change = fabs(x[idx] - old_x);
+                            if (change > max_c) max_c = change;
                         }
                     }
                 }
@@ -197,6 +196,7 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
         set_bnd(M, N, O, b, x);
     } while (max_c > tol && ++l < 20);
 }
+
 
 
 
