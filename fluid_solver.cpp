@@ -1,6 +1,7 @@
 #include "fluid_solver.h"
 #include <omp.h>
 #include <cmath>
+#include <cstdint>
 
 #define IX(i, j, k) ((i) + (M + 2) * (j) + (M + 2) * (N + 2) * (k))
 inline void SWAP(float *&x0, float *&x)                                        
@@ -83,65 +84,23 @@ void set_bnd(int M, int N, int O, int b, float *x) {
 
 
 
-inline float calculate_new_value(int i, int j, int k, float *x, float *x0, float a, float c, int M, int N, int O) {
+float calculate_new_value(int i, int j, int k, float *x, float *x0, float a, float c, int M, int N, int O) {
   int M2 = M + 2;
   int N2 = N + 2;
   int MN2 = M2 * N2;
 
-  // Calcular o índice da posição atual
   int index = i + j * M2 + k * MN2;
+  int idx_left = index - 1;
+  int idx_right = index + 1;
+  int idx_below = index - M2;
+  int idx_above = index + M2;
+  int idx_back = index - MN2;
+  int idx_front = index + MN2;
 
-  // Acessar os vizinhos diretamente
-  float left = x[index - 1];
-  float right = x[index + 1];
-  float below = x[index - M2];
-  float above = x[index + M2];
-  float back = x[index - MN2];
-  float front = x[index + MN2];
+  float sum_neighbors = x[idx_left] + x[idx_right] + x[idx_below] + x[idx_above] + x[idx_back] + x[idx_front];
 
-  // Calcular a soma dos vizinhos
-  float sum_neighbors = left + right + below + above + back + front;
-
-  // Calcular e retornar o novo valor
   return (x0[index] + a * sum_neighbors) / c;
 }
-
-/*
-void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c) {
-  int M2 = M + 2;
-  int N2 = N + 2;
-  int MN2 = M2 * N2;
-
-  int block_size_i = 8;  
-  int block_size_j = 8;  
-  int block_size_k = 8;  
-
-  for (int l = 0; l < LINEARSOLVERTIMES; l++) {
-
-    // Loop over blocks
-    for (int kk = 1; kk <= O; kk += block_size_k) {
-      for (int jj = 1; jj <= N; jj += block_size_j) {
-        for (int ii = 1; ii <= M; ii += block_size_i) {
-
-          // Dentro de cada bloco, iterar sobre os elementos
-          for (int k = kk; k < kk + block_size_k && k <= O; k++) {
-            for (int j = jj; j < jj + block_size_j && j <= N; j++) {
-              for (int i = ii; i < ii + block_size_i && i <= M; i+=4) {
-                x[i + j * M2 + k * MN2] = calculate_new_value(i, j, k, x, x0, a, c, M, N, O);
-                x[i + 1 + j * M2 + k * MN2] = calculate_new_value(i + 1, j, k, x, x0, a, c, M, N, O);
-                x[i + 2 + j * M2 + k * MN2] = calculate_new_value(i + 2, j, k, x, x0, a, c, M, N, O);
-                x[i + 3 + j * M2 + k * MN2] = calculate_new_value(i + 3, j, k, x, x0, a, c, M, N, O);
-              }
-            }
-          }
-        }
-      }
-    }
-    set_bnd(M, N, O, b, x);
-  }
-}
-*/
-
 
 void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c) {
     float tol = 1e-7, max_c, old_x, change;
@@ -150,18 +109,24 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
     do {
         max_c = 0.0f;
 
+        #pragma omp parallel
+        {
         // Red phase
-        #pragma omp parallel for collapse(2) reduction(max:max_c) private(old_x, change)
+        #pragma omp for collapse(2) reduction(max:max_c) private(old_x, change) //schedule(dynamic)
         for (int kk = 1; kk <= O; kk += blockSize) {
             for (int jj = 1; jj <= N; jj += blockSize) {
-                for (int k = kk; k < std::min(kk + blockSize, O + 1); k++) {
-                    for (int j = jj; j < std::min(jj + blockSize, N + 1); j++) {
+                int k_max = std::min(kk + blockSize, O + 1);
+                int j_max = std::min(jj + blockSize, N + 1);
+                
+                for (int k = kk; k < k_max; k++) {
+                    for (int j = jj; j < j_max; j++) {
                         int start_i = 1 + (j + k) % 2;
-
+                        
+                        #pragma omp simd aligned(x:64)
                         for (int i = start_i; i <= M; i += 2) {
                             int idx = IX(i, j, k);
                             old_x = x[idx]; 
-                            //#pragma omp simd aligned(x, x0:64)  // Alinha os dados com o cache
+
                             x[idx] = calculate_new_value(i, j, k, x, x0, a, c, M, N, O);
                             change = fabs(x[idx] - old_x);
                             if (change > max_c) max_c = change;
@@ -175,15 +140,21 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
         #pragma omp barrier
 
         // Black phase
-        #pragma omp parallel for collapse(2) reduction(max:max_c) private(old_x, change)
+        #pragma omp for collapse(2) reduction(max:max_c) private(old_x, change) //schedule(dynamic)
         for (int kk = 1; kk <= O; kk += blockSize) {
             for (int jj = 1; jj <= N; jj += blockSize) {
-                for (int k = kk; k < std::min(kk + blockSize, O + 1); k++) {
-                    for (int j = jj; j < std::min(jj + blockSize, N + 1); j++) {
+                int k_max = std::min(kk + blockSize, O + 1);
+                int j_max = std::min(jj + blockSize, N + 1);
+                
+                for (int k = kk; k < k_max; k++) {
+                    for (int j = jj; j < j_max; j++) {
                         int start_i = 2 - (j + k) % 2;  // Black cells start
+                        
+                        #pragma omp simd aligned(x:64)
                         for (int i = start_i; i <= M; i += 2) {
                             int idx = IX(i, j, k);
                             old_x = x[idx]; 
+
                             x[idx] = calculate_new_value(i, j, k, x, x0, a, c, M, N, O);
                             change = fabs(x[idx] - old_x);
                             if (change > max_c) max_c = change;
@@ -192,14 +163,10 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
                 }
             }
         }
-
+        }
         set_bnd(M, N, O, b, x);
     } while (max_c > tol && ++l < 20);
 }
-
-
-
-
 
 // Diffusion step (uses implicit method)
 void diffuse(int M, int N, int O, int b, float *x, float *x0, float diff, float dt) {

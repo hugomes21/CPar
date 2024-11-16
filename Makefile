@@ -1,18 +1,15 @@
-CPP = g++ -Wall -fopenmp -Ofast -msse4.1 -funroll-loops -ftree-vectorize -ffast-math -fno-math-errno -mfpmath=sse
+CPP = g++ -Wall -Ofast -msse4.1 -funroll-loops -ftree-vectorize -ffast-math -fno-math-errno -mfpmath=sse
 SRCS = main.cpp fluid_solver.cpp EventManager.cpp
 
-all: phase2
-
-phase2:
-	$(CPP) $(SRCS) -o fluid_sim
+all: runseq runpar
 
 clean:
 	@echo Cleaning up...
-	@rm fluid_sim
+	@rm -f fluid_sim fluid_sim_seq
 	@echo Done.
 
 runseq:
-	./fluid_sim_seq
+	$(CPP) $(SRCS) -o fluid_sim_seq
 
 runpar:
-	./fluid_sim
+	$(CPP) -fopenmp $(SRCS) -o fluid_sim  
