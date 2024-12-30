@@ -2,7 +2,6 @@
 #include "fluid_solver.h"
 #include <iostream>
 #include <vector>
-#include <mpi.h>
 
 #define SIZE 168
 
@@ -103,45 +102,28 @@ void simulate(EventManager &eventManager, int timesteps) {
 }
 
 int main() {
-    // Inicialização do MPI
-    int mpi = MPI_Init(NULL, NULL);
-    if (mpi != MPI_SUCCESS) {
-        printf("Error starting MPI program. Terminating.\n");
-        MPI_Abort(MPI_COMM_WORLD, mpi);
-    }
+  // Initialize EventManager
+  EventManager eventManager;
+  eventManager.read_events("events.txt");
 
-    // Obter rank e tamanho do MPI
-    int rank, size;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
+  // Get the total number of timesteps from the event file
+  int timesteps = eventManager.get_total_timesteps();
 
-    // Initialize EventManager
-    EventManager eventManager;
-    eventManager.read_events("events.txt");
+  // Allocate and clear data
+  if (!allocate_data())
+    return -1;
+  clear_data();
 
-    // Get the total number of timesteps from the event file
-    int timesteps = eventManager.get_total_timesteps();
+  // Run simulation with events
+  simulate(eventManager, timesteps);
 
-    // Allocate and clear data
-    if (!allocate_data())
-        return -1;
-    clear_data();
+  // Print total density at the end of simulation
+  float total_density = sum_density();
+  std::cout << "Total density after " << timesteps
+            << " timesteps: " << total_density << std::endl;
 
-    // Run simulation with events
-    simulate(eventManager, timesteps);
+  // Free memory
+  free_data();
 
-    // Print total density at the end of simulation
-    float total_density = sum_density();
-    if (rank == 0) { // Apenas o processo com rank 0 imprime o resultado
-        std::cout << "Total density after " << timesteps
-                  << " timesteps: " << total_density << std::endl;
-    }
-
-    // Free memory
-    free_data();
-
-    // Finalização do MPI
-    MPI_Finalize();
-
-    return 0;
+  return 0;
 }

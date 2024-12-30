@@ -1,7 +1,9 @@
-#include "fluid_solver.h"
+#include "fluid_solver_mpi.h"
 #include <omp.h>
+#include <mpi.h>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 
 #define IX(i, j, k) ((i) + (M + 2) * (j) + (M + 2) * (N + 2) * (k))
 void SWAP(float *&x0, float *&x) { float *tmp = x0; x0 = x; x = tmp;}
@@ -13,7 +15,6 @@ void add_source(int M, int N, int O, float *x, float *s, float dt) {
   int size = (M + 2) * (N + 2) * (O + 2);
 
   // Unroll the loop by a factor of 16
-  #pragma omp parallel for
   for (int i = 0; i <= size - 16; i += 16) {
     x[i] += dt * s[i];
     x[i + 1] += dt * s[i + 1];
@@ -34,7 +35,6 @@ void add_source(int M, int N, int O, float *x, float *s, float dt) {
   }
 
   // Handle the remaining elements
-  #pragma omp parallel for
   for (int i = size - (size % 16); i < size; i++) {
     x[i] += dt * s[i];
   }
@@ -45,7 +45,6 @@ void set_bnd(int M, int N, int O, int b, float *x) {
   int i, j;
 
   // Atualizar os limites das faces Z (k = 0 e k = O + 1)
-  #pragma omp parallel for collapse(2) private(i, j)
   for (j = 1; j <= N; j++) {
     for (i = 1; i <= M; i += 4) { // Loop Unrolling com passo de 4
       x[IX(i, j, 0)] = (b == 3) ? -x[IX(i, j, 1)] : x[IX(i, j, 1)];
@@ -61,7 +60,6 @@ void set_bnd(int M, int N, int O, int b, float *x) {
   }
 
   // Atualizar os limites das faces X (i = 0 e i = M + 1)
-  #pragma omp parallel for collapse(2) private(i, j)
   for (j = 1; j <= O; j++) {
     for (i = 1; i <= N; i += 2) {
       x[IX(0, i, j)] = (b == 1) ? -x[IX(1, i, j)] : x[IX(1, i, j)];
@@ -74,7 +72,6 @@ void set_bnd(int M, int N, int O, int b, float *x) {
 
 
   // Atualizar os limites das faces Y (j = 0 e j = N + 1)
-  #pragma omp parallel for collapse(2) private(i, j)
   for (i = 1; i <= M; i++) {
     for (j = 1; j <= O; j += 2) {
       x[IX(i, 0, j)] = (b == 2) ? -x[IX(i, 1, j)] : x[IX(i, 1, j)];
@@ -110,34 +107,36 @@ float calculate_new_value(int i, int j, int k, float *x, float *x0, float a, flo
 
   float sum_neighbors = x[idx_left] + x[idx_right] + x[idx_below] + x[idx_above] + x[idx_back] + x[idx_front];
 
+  //printf("calculate_new_value: i=%d, j=%d, k=%d, x0[index]=%f, sum_neighbors=%f, a=%f, c=%f\n", i, j, k, x0[index], sum_neighbors, a, c);
+
+
   return (x0[index] + a * sum_neighbors) / c;
 }
 
-void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c) {
-    float tol = 1e-7, max_c, old_x, change;
+void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c, int rank, int size) {
+    float tol = 1e-7, max_c, global_max_c, old_x, change;
     int l = 0, blockSize = 8;
+
+    // Divisão do domínio por processo
+    int local_M = M / size; // Número de células em x por processo
+    int start_i = rank * local_M + 1; // Índice da primeira célula em x
+    int end_i = (rank == size - 1) ? M : (rank + 1) * local_M; // Índice da última célula em x
 
     do {
         max_c = 0.0f;
 
-        #pragma omp parallel
-        {
         // Red phase
-        #pragma omp for collapse(2) reduction(max:max_c) private(old_x, change)
         for (int kk = 1; kk <= O; kk += blockSize) {
             for (int jj = 1; jj <= N; jj += blockSize) {
                 int k_max = std::min(kk + blockSize, O + 1);
                 int j_max = std::min(jj + blockSize, N + 1);
-                
+
                 for (int k = kk; k < k_max; k++) {
                     for (int j = jj; j < j_max; j++) {
-                        int start_i = 1 + (j + k) % 2; // Red cells start
-                        
-                        #pragma omp simd aligned(x:64)
-                        for (int i = start_i; i <= M; i += 2) {
+                        int start_i_red = start_i + (j + k) % 2;
+                        for (int i = start_i_red; i <= end_i; i += 2) {
                             int idx = IX(i, j, k);
-                            old_x = x[idx]; 
-
+                            old_x = x[idx];
                             x[idx] = calculate_new_value(i, j, k, x, x0, a, c, M, N, O);
                             change = fabs(x[idx] - old_x);
                             if (change > max_c) max_c = change;
@@ -147,25 +146,29 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
             }
         }
 
-        // synchronization between red and black phases
-        #pragma omp barrier
+        // Troca de dados entre processos usando MPI_Send e MPI_Recv
+        int slice_size = (N + 2) * (O + 2);
+        if (rank > 0) {
+            MPI_Send(&x[IX(start_i, 0, 0)], slice_size, MPI_FLOAT, rank - 1, 0, MPI_COMM_WORLD);
+            MPI_Recv(&x[IX(start_i - 1, 0, 0)], slice_size, MPI_FLOAT, rank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+        if (rank < size - 1) {
+            MPI_Send(&x[IX(end_i, 0, 0)], slice_size, MPI_FLOAT, rank + 1, 0, MPI_COMM_WORLD);
+            MPI_Recv(&x[IX(end_i + 1, 0, 0)], slice_size, MPI_FLOAT, rank + 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
 
         // Black phase
-        #pragma omp for collapse(2) reduction(max:max_c) private(old_x, change) 
         for (int kk = 1; kk <= O; kk += blockSize) {
             for (int jj = 1; jj <= N; jj += blockSize) {
                 int k_max = std::min(kk + blockSize, O + 1);
                 int j_max = std::min(jj + blockSize, N + 1);
-                
+
                 for (int k = kk; k < k_max; k++) {
                     for (int j = jj; j < j_max; j++) {
-                        int start_i = 2 - (j + k) % 2;  // Black cells start
-                        
-                        #pragma omp simd aligned(x:64)
-                        for (int i = start_i; i <= M; i += 2) {
+                        int start_i_black = start_i + (j + k + 1) % 2;
+                        for (int i = start_i_black; i <= end_i; i += 2) {
                             int idx = IX(i, j, k);
-                            old_x = x[idx]; 
-
+                            old_x = x[idx];
                             x[idx] = calculate_new_value(i, j, k, x, x0, a, c, M, N, O);
                             change = fabs(x[idx] - old_x);
                             if (change > max_c) max_c = change;
@@ -174,16 +177,39 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
                 }
             }
         }
-        }
+
+        // Ajustar as bordas
         set_bnd(M, N, O, b, x);
+
+        // Troca de dados entre processos usando MPI_Send e MPI_Recv
+        if (rank > 0) {
+            MPI_Send(&x[IX(start_i, 0, 0)], slice_size, MPI_FLOAT, rank - 1, 0, MPI_COMM_WORLD);
+            MPI_Recv(&x[IX(start_i - 1, 0, 0)], slice_size, MPI_FLOAT, rank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+        if (rank < size - 1) {
+            MPI_Send(&x[IX(end_i, 0, 0)], slice_size, MPI_FLOAT, rank + 1, 0, MPI_COMM_WORLD);
+            MPI_Recv(&x[IX(end_i + 1, 0, 0)], slice_size, MPI_FLOAT, rank + 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+
+        // Redução global do max_c
+        MPI_Allreduce(&max_c, &global_max_c, 1, MPI_FLOAT, MPI_MAX, MPI_COMM_WORLD);
+        max_c = global_max_c;
+
+        // Debug message
+        if (rank == 0) {
+            printf("Iteration %d, max_c = %e\n", l, global_max_c);
+        }
+
     } while (max_c > tol && ++l < 20);
 }
 
+
+
 // Diffusion step (uses implicit method)
-void diffuse(int M, int N, int O, int b, float *x, float *x0, float diff, float dt) {
+void diffuse(int M, int N, int O, int b, float *x, float *x0, float diff, float dt, int rank, int size) {
   int max = MAX(MAX(M, N), O);
   float a = dt * diff * max * max;
-  lin_solve(M, N, O, b, x, x0, a, 1 + 6 * a);
+  lin_solve(M, N, O, b, x, x0, a, 1 + 6 * a, rank, size);
 }
 
 // Advection step (uses velocity field to move quantities)
@@ -194,7 +220,6 @@ void advect(int M, int N, int O, int b, float *d, float *d0, float *u, float *v,
     int block_size_j = 8;
     int block_size_k = 8;
 
-    #pragma omp parallel for collapse(3)
     for (int kk = 1; kk <= O; kk += block_size_k) {
         for (int jj = 1; jj <= N; jj += block_size_j) {
             for (int ii = 1; ii <= M; ii += block_size_i) {
@@ -240,7 +265,7 @@ void advect(int M, int N, int O, int b, float *d, float *d0, float *u, float *v,
 
 
 // Projection step to ensure incompressibility (make the velocity field divergence-free)
-void project(int M, int N, int O, float *u, float *v, float *w, float *p, float *div) {
+void project(int M, int N, int O, float *u, float *v, float *w, float *p, float *div, int rank, int size) {
   int M2 = M + 2;
   int N2 = N + 2;
   int MN2 = M2 * N2;
@@ -250,7 +275,6 @@ void project(int M, int N, int O, float *u, float *v, float *w, float *p, float 
   int block_size_k = 8;
 
   // Primeira parte: cálculo de div e inicialização de p com loop unrolling
-  #pragma omp parallel for collapse(3)
   for (int kk = 1; kk <= O; kk += block_size_k) {
     for (int jj = 1; jj <= N; jj += block_size_j) {
       for (int ii = 1; ii <= M; ii += block_size_i) {
@@ -286,10 +310,9 @@ void project(int M, int N, int O, float *u, float *v, float *w, float *p, float 
 
   set_bnd(M, N, O, 0, div);
   set_bnd(M, N, O, 0, p);
-  lin_solve(M, N, O, 0, p, div, 1, 6);
+  lin_solve(M, N, O, 0, p, div, 1, 6, rank, size);
 
   // Segunda parte: atualização de u, v e w com loop unrolling
-  #pragma omp parallel for collapse(3)
   for (int kk = 1; kk <= O; kk += block_size_k) {
     for (int jj = 1; jj <= N; jj += block_size_j) {
       for (int ii = 1; ii <= M; ii += block_size_i) {
@@ -325,32 +348,32 @@ void project(int M, int N, int O, float *u, float *v, float *w, float *p, float 
 
 
 // Step function for density
-void dens_step(int M, int N, int O, float *x, float *x0, float *u, float *v, float *w, float diff, float dt) {
+void dens_step(int M, int N, int O, float *x, float *x0, float *u, float *v, float *w, float diff, float dt, int rank, int size) {
     add_source(M, N, O, x, x0, dt);
     SWAP(x0, x);
-    diffuse(M, N, O, 0, x, x0, diff, dt);
+    diffuse(M, N, O, 0, x, x0, diff, dt, rank, size);
     SWAP(x0, x);
     advect(M, N, O, 0, x, x0, u, v, w, dt);
 }
 
 
 // Step function for velocity
-void vel_step(int M, int N, int O, float *u, float *v, float *w, float *u0, float *v0, float *w0, float visc, float dt) {
+void vel_step(int M, int N, int O, float *u, float *v, float *w, float *u0, float *v0, float *w0, float visc, float dt, int rank, int size) {
   add_source(M, N, O, u, u0, dt);
   add_source(M, N, O, v, v0, dt);
   add_source(M, N, O, w, w0, dt);
   SWAP(u0, u);
-  diffuse(M, N, O, 1, u, u0, visc, dt);
+  diffuse(M, N, O, 1, u, u0, visc, dt, rank, size);
   SWAP(v0, v);
-  diffuse(M, N, O, 2, v, v0, visc, dt);
+  diffuse(M, N, O, 2, v, v0, visc, dt, rank, size);
   SWAP(w0, w);
-  diffuse(M, N, O, 3, w, w0, visc, dt);
-  project(M, N, O, u, v, w, u0, v0);
+  diffuse(M, N, O, 3, w, w0, visc, dt, rank, size);
+  project(M, N, O, u, v, w, u0, v0, rank, size);
   SWAP(u0, u);
   SWAP(v0, v);
   SWAP(w0, w);
   advect(M, N, O, 1, u, u0, u0, v0, w0, dt);
   advect(M, N, O, 2, v, v0, u0, v0, w0, dt);
   advect(M, N, O, 3, w, w0, u0, v0, w0, dt);
-  project(M, N, O, u, v, w, u0, v0);
+  project(M, N, O, u, v, w, u0, v0, rank, size);
 }
