@@ -106,35 +106,82 @@ float calculate_new_value(int i, int j, int k, float *x, float *x0, float a, flo
   int idx_front = index + MN2;
 
   float sum_neighbors = x[idx_left] + x[idx_right] + x[idx_below] + x[idx_above] + x[idx_back] + x[idx_front];
-
-  //printf("calculate_new_value: i=%d, j=%d, k=%d, x0[index]=%f, sum_neighbors=%f, a=%f, c=%f\n", i, j, k, x0[index], sum_neighbors, a, c);
-
-
   return (x0[index] + a * sum_neighbors) / c;
 }
+
+int distribute_workload(int N, int size, int rank, int &start_index, int &end_index) {
+    // Dividir o intervalo do eixo j entre os ranks
+    int rows_per_process = N / size;
+    int remaining_rows = N % size;
+
+    // Calcular start_index e end_index para o rank atual
+    start_index = rank * rows_per_process + std::min(rank, remaining_rows);
+    end_index = start_index + rows_per_process - 1 + (rank < remaining_rows ? 1 : 0);
+
+    // Garantir que os índices estão dentro dos limites
+    if (start_index > end_index || start_index < 0 || end_index >= N) {
+        printf("Erro: Índices inválidos! Rank %d tem start_index=%d e end_index=%d\n",
+               rank, start_index, end_index);
+        start_index = -1;
+        end_index = -1;
+    } else {
+        printf("Rank %d: start_index=%d, end_index=%d\n", rank, start_index, end_index);
+    }
+
+    // Verificação e retorno da quantidade de trabalho atribuída ao rank
+    return (start_index != -1 && end_index != -1) ? end_index - start_index + 1 : 0;
+}
+
+// Função para trocar fronteiras entre processos
+void exchange_boundaries(float *x, int M, int N, int O, int start_index, int end_index, int rank, int size) {
+    MPI_Request requests[4];
+    MPI_Status statuses[4];
+
+    int slice_size = (M + 2) * (O + 2); // Dimensão de uma fatia (XY plano)
+
+    // Inicializar requests como nulos
+    requests[0] = requests[1] = requests[2] = requests[3] = MPI_REQUEST_NULL;
+
+    // Top boundary
+    if (rank > 0) {
+        MPI_Irecv(&x[IX(1, start_index - 1, 1)], slice_size, MPI_FLOAT, rank - 1, 1, MPI_COMM_WORLD, &requests[1]);
+        MPI_Isend(&x[IX(1, start_index, 1)], slice_size, MPI_FLOAT, rank - 1, 0, MPI_COMM_WORLD, &requests[0]);
+    }
+
+    // Bottom boundary
+    if (rank < size - 1) {
+        MPI_Irecv(&x[IX(1, end_index + 1, 1)], slice_size, MPI_FLOAT, rank + 1, 0, MPI_COMM_WORLD, &requests[3]);
+        MPI_Isend(&x[IX(1, end_index, 1)], slice_size, MPI_FLOAT, rank + 1, 1, MPI_COMM_WORLD, &requests[2]);
+    }
+
+    // Esperar todas as comunicações serem finalizadas
+    MPI_Waitall(4, requests, statuses);
+    MPI_Barrier(MPI_COMM_WORLD);
+}
+
+
 
 void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c, int rank, int size) {
     float tol = 1e-7, max_c, global_max_c, old_x, change;
     int l = 0, blockSize = 8;
 
     // Divisão do domínio por processo
-    int local_M = M / size; // Número de células em x por processo
-    int start_i = rank * local_M + 1; // Índice da primeira célula em x
-    int end_i = (rank == size - 1) ? M : (rank + 1) * local_M; // Índice da última célula em x
+    int start_index, end_index;
+    distribute_workload(N, size, rank, start_index, end_index);
 
     do {
         max_c = 0.0f;
 
         // Red phase
         for (int kk = 1; kk <= O; kk += blockSize) {
-            for (int jj = 1; jj <= N; jj += blockSize) {
+            for (int jj = start_index; jj < end_index; jj += blockSize) {
                 int k_max = std::min(kk + blockSize, O + 1);
                 int j_max = std::min(jj + blockSize, N + 1);
 
                 for (int k = kk; k < k_max; k++) {
                     for (int j = jj; j < j_max; j++) {
-                        int start_i_red = start_i + (j + k) % 2;
-                        for (int i = start_i_red; i <= end_i; i += 2) {
+                        int start_i_red = 1 + (j + k) % 2;
+                        for (int i = start_i_red; i <= M; i += 2) {
                             int idx = IX(i, j, k);
                             old_x = x[idx];
                             x[idx] = calculate_new_value(i, j, k, x, x0, a, c, M, N, O);
@@ -146,27 +193,18 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
             }
         }
 
-        // Troca de dados entre processos usando MPI_Send e MPI_Recv
-        int slice_size = (N + 2) * (O + 2);
-        if (rank > 0) {
-            MPI_Send(&x[IX(start_i, 0, 0)], slice_size, MPI_FLOAT, rank - 1, 0, MPI_COMM_WORLD);
-            MPI_Recv(&x[IX(start_i - 1, 0, 0)], slice_size, MPI_FLOAT, rank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        }
-        if (rank < size - 1) {
-            MPI_Send(&x[IX(end_i, 0, 0)], slice_size, MPI_FLOAT, rank + 1, 0, MPI_COMM_WORLD);
-            MPI_Recv(&x[IX(end_i + 1, 0, 0)], slice_size, MPI_FLOAT, rank + 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        }
+        exchange_boundaries(x, M, N, O, start_index, end_index, rank, size);
 
         // Black phase
         for (int kk = 1; kk <= O; kk += blockSize) {
-            for (int jj = 1; jj <= N; jj += blockSize) {
+            for (int jj = start_index; jj < end_index; jj += blockSize) {
                 int k_max = std::min(kk + blockSize, O + 1);
                 int j_max = std::min(jj + blockSize, N + 1);
 
                 for (int k = kk; k < k_max; k++) {
                     for (int j = jj; j < j_max; j++) {
-                        int start_i_black = start_i + (j + k + 1) % 2;
-                        for (int i = start_i_black; i <= end_i; i += 2) {
+                        int start_i_black = 2 - (j + k) % 2;
+                        for (int i = start_i_black; i <= M; i += 2) {
                             int idx = IX(i, j, k);
                             old_x = x[idx];
                             x[idx] = calculate_new_value(i, j, k, x, x0, a, c, M, N, O);
@@ -178,32 +216,19 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
             }
         }
 
-        // Ajustar as bordas
-        set_bnd(M, N, O, b, x);
-
-        // Troca de dados entre processos usando MPI_Send e MPI_Recv
-        if (rank > 0) {
-            MPI_Send(&x[IX(start_i, 0, 0)], slice_size, MPI_FLOAT, rank - 1, 0, MPI_COMM_WORLD);
-            MPI_Recv(&x[IX(start_i - 1, 0, 0)], slice_size, MPI_FLOAT, rank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        }
-        if (rank < size - 1) {
-            MPI_Send(&x[IX(end_i, 0, 0)], slice_size, MPI_FLOAT, rank + 1, 0, MPI_COMM_WORLD);
-            MPI_Recv(&x[IX(end_i + 1, 0, 0)], slice_size, MPI_FLOAT, rank + 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        }
+        exchange_boundaries(x, M, N, O, start_index, end_index, rank, size);
 
         // Redução global do max_c
         MPI_Allreduce(&max_c, &global_max_c, 1, MPI_FLOAT, MPI_MAX, MPI_COMM_WORLD);
-        max_c = global_max_c;
+        set_bnd(M, N, O, b, x);
 
-        // Debug message
         if (rank == 0) {
-            printf("Iteration %d, max_c = %e\n", l, global_max_c);
+            printf("Iteration %d, max_c = %f\n", l, global_max_c);
+        } else {
+            printf("Rank %d: Iteration %d, max_c = %f\n", rank, l, global_max_c);
         }
-
-    } while (max_c > tol && ++l < 20);
+    } while (global_max_c > tol && ++l < 20);
 }
-
-
 
 // Diffusion step (uses implicit method)
 void diffuse(int M, int N, int O, int b, float *x, float *x0, float diff, float dt, int rank, int size) {
@@ -213,8 +238,11 @@ void diffuse(int M, int N, int O, int b, float *x, float *x0, float diff, float 
 }
 
 // Advection step (uses velocity field to move quantities)
-void advect(int M, int N, int O, int b, float *d, float *d0, float *u, float *v, float *w, float dt) {
+void advect(int M, int N, int O, int b, float *d, float *d0, float *u, float *v, float *w, float dt, int rank, int size) {
     float dtX = dt * M, dtY = dt * N, dtZ = dt * O;
+
+    // Troca de fronteiras antes da advecção
+    exchange_boundaries(d0, M, N, O, 1, N, rank, size);
 
     int block_size_i = 8;
     int block_size_j = 8;
@@ -260,6 +288,8 @@ void advect(int M, int N, int O, int b, float *d, float *d0, float *u, float *v,
         }
     }
 
+    // Troca de fronteiras após a advecção
+    exchange_boundaries(d, M, N, O, 1, N, rank, size);
     set_bnd(M, N, O, b, d);
 }
 
@@ -273,6 +303,11 @@ void project(int M, int N, int O, float *u, float *v, float *w, float *p, float 
   int block_size_i = 8;
   int block_size_j = 8;
   int block_size_k = 8;
+
+  // Troca de fronteiras antes da projeção
+  exchange_boundaries(u, M, N, O, 1, N, rank, size);
+  exchange_boundaries(v, M, N, O, 1, N, rank, size);
+  exchange_boundaries(w, M, N, O, 1, N, rank, size);
 
   // Primeira parte: cálculo de div e inicialização de p com loop unrolling
   for (int kk = 1; kk <= O; kk += block_size_k) {
@@ -344,6 +379,11 @@ void project(int M, int N, int O, float *u, float *v, float *w, float *p, float 
   set_bnd(M, N, O, 1, u);
   set_bnd(M, N, O, 2, v);
   set_bnd(M, N, O, 3, w);
+
+  // Troca de fronteiras após a projeção
+  exchange_boundaries(u, M, N, O, 1, N, rank, size);
+  exchange_boundaries(v, M, N, O, 1, N, rank, size);
+  exchange_boundaries(w, M, N, O, 1, N, rank, size);
 }
 
 
@@ -353,7 +393,7 @@ void dens_step(int M, int N, int O, float *x, float *x0, float *u, float *v, flo
     SWAP(x0, x);
     diffuse(M, N, O, 0, x, x0, diff, dt, rank, size);
     SWAP(x0, x);
-    advect(M, N, O, 0, x, x0, u, v, w, dt);
+    advect(M, N, O, 0, x, x0, u, v, w, dt, rank, size);
 }
 
 
@@ -372,8 +412,8 @@ void vel_step(int M, int N, int O, float *u, float *v, float *w, float *u0, floa
   SWAP(u0, u);
   SWAP(v0, v);
   SWAP(w0, w);
-  advect(M, N, O, 1, u, u0, u0, v0, w0, dt);
-  advect(M, N, O, 2, v, v0, u0, v0, w0, dt);
-  advect(M, N, O, 3, w, w0, u0, v0, w0, dt);
+  advect(M, N, O, 1, u, u0, u0, v0, w0, dt, rank, size);
+  advect(M, N, O, 2, v, v0, u0, v0, w0, dt, rank, size);
+  advect(M, N, O, 3, w, w0, u0, v0, w0, dt, rank, size);
   project(M, N, O, u, v, w, u0, v0, rank, size);
 }
