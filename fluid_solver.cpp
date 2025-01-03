@@ -1,6 +1,7 @@
 #include "fluid_solver.h"
 #include <omp.h>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 
 #define IX(i, j, k) ((i) + (M + 2) * (j) + (M + 2) * (N + 2) * (k))
@@ -101,16 +102,25 @@ float calculate_new_value(int i, int j, int k, float *x, float *x0, float a, flo
   int MN2 = M2 * N2;
 
   int index = i + j * M2 + k * MN2;
-  int idx_left = index - 1;
-  int idx_right = index + 1;
-  int idx_below = index - M2;
-  int idx_above = index + M2;
-  int idx_back = index - MN2;
-  int idx_front = index + MN2;
+
+  if (fabs(c) < 1e-6) {
+    printf("Error: Division by near-zero value at (%d, %d, %d)\n", i, j, k);
+    return x0[index];
+  }
+
+  int idx_left = (i > 1) ? index - 1 : index;
+  int idx_right = (i < M) ? index + 1 : index;
+  int idx_below = (j > 1) ? index - M2 : index;
+  int idx_above = (j < N) ? index + M2 : index;
+  int idx_back = (k > 1) ? index - MN2 : index;
+  int idx_front = (k < O) ? index + MN2 : index;
 
   float sum_neighbors = x[idx_left] + x[idx_right] + x[idx_below] + x[idx_above] + x[idx_back] + x[idx_front];
+  float new_value = (x0[index] + a * sum_neighbors) / (c + 1e-7); 
 
-  return (x0[index] + a * sum_neighbors) / c;
+  if (fabs(new_value - x[index]) < 1e-8) return x[index];
+
+  return new_value;
 }
 
 void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c) {

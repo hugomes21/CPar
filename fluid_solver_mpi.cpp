@@ -98,15 +98,25 @@ float calculate_new_value(int i, int j, int k, float *x, float *x0, float a, flo
   int MN2 = M2 * N2;
 
   int index = i + j * M2 + k * MN2;
-  int idx_left = index - 1;
-  int idx_right = index + 1;
-  int idx_below = index - M2;
-  int idx_above = index + M2;
-  int idx_back = index - MN2;
-  int idx_front = index + MN2;
+
+  if (fabs(c) < 1e-6) {
+    printf("Error: Division by near-zero value at (%d, %d, %d)\n", i, j, k);
+    return x0[index]; // Or handle appropriately
+  }
+
+  int idx_left = (i > 1) ? index - 1 : index;
+  int idx_right = (i < M) ? index + 1 : index;
+  int idx_below = (j > 1) ? index - M2 : index;
+  int idx_above = (j < N) ? index + M2 : index;
+  int idx_back = (k > 1) ? index - MN2 : index;
+  int idx_front = (k < O) ? index + MN2 : index;
 
   float sum_neighbors = x[idx_left] + x[idx_right] + x[idx_below] + x[idx_above] + x[idx_back] + x[idx_front];
-  return (x0[index] + a * sum_neighbors) / c;
+  float new_value = (x0[index] + a * sum_neighbors) / (c + 1e-7); 
+
+  if (fabs(new_value - x[index]) < 1e-8) return x[index];
+
+  return new_value;
 }
 
 int distribute_workload(int N, int size, int rank, int &start_index, int &end_index) {
@@ -131,6 +141,19 @@ int distribute_workload(int N, int size, int rank, int &start_index, int &end_in
     // Verificação e retorno da quantidade de trabalho atribuída ao rank
     return (start_index != -1 && end_index != -1) ? end_index - start_index + 1 : 0;
 }
+
+//void distribute_workload(int N, int size, int rank, int &start_index, int &end_index) {
+//    if (size == 0) {
+//        printf("Error: Division by zero in distribute_workload. Variable size is zero.\n");
+//        MPI_Abort(MPI_COMM_WORLD, 1);
+//    }
+//
+//    int base_chunk = N / size; // Verifique se size não é zero
+//    int remainder = N % size;
+//
+//    start_index = rank * base_chunk + std::min(rank, remainder) + 1;
+//    end_index = start_index + base_chunk - 1 + (rank < remainder ? 1 : 0);
+//}
 
 // Função para trocar fronteiras entre processos
 void exchange_boundaries(float *x, int M, int N, int O, int start_index, int end_index, int rank, int size) {

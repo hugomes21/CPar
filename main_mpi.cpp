@@ -78,13 +78,13 @@ void apply_events(const std::vector<Event> &events) {
 }
 
 // Function to sum the total density
-float sum_density() {
-  float total_density = 0.0f;
-  int size = (M + 2) * (N + 2) * (O + 2);
-  for (int i = 0; i < size; i++) {
-    total_density += dens[i];
-  }
-  return total_density;
+float sum_density(int M, int N, int O, float *x) {
+    float total_density = 0.0f;
+    for (int i = 0; i < (M + 2) * (N + 2) * (O + 2); i++) {
+        total_density += x[i];
+    }
+    //printf("Local total density: %f\n", total_density); // Debug message
+    return total_density;
 }
 
 // Simulation loop
@@ -115,6 +115,8 @@ int main() {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
+    printf("Rank %d: MPI initialized with size %d\n", rank, size);
+
     // Initialize EventManager
     EventManager eventManager;
     eventManager.read_events("events.txt");
@@ -126,41 +128,22 @@ int main() {
     if (!allocate_data())
         return -1;
     clear_data();
-
-    // Calculate total iterations in the triangular loop
-    int total_iterations = (N * (N - 1)) / 2;
-    // Calculate iterations per process
-    int iterations_per_process = total_iterations / size;
-    // Simulate the triangular loop to find the start and end indices for each process
-    int inner_iterations = 0;
-    int start_index = -1;
-    int end_index = -1;
-    // This for loop serves for statically dividing the outer loop iterations as best as possible!!
-    for (int i = 0; i < N; i++) {
-        if ((inner_iterations >= rank * iterations_per_process) && start_index == -1) {
-            start_index = i;
-        }
-        if (inner_iterations >= (rank + 1) * iterations_per_process) {
-            end_index = i;
-            break;
-        }
-        inner_iterations += N - (i + 1);
-    }
-    // Handle last process case (it might have more iterations due to rounding)
-    if (rank == size - 1) {
-        end_index = N;
-    }
-
-    printf("Rank - %d. I calculate from %d to %d\n", rank, start_index, end_index);
-
+    
     // Run simulation with events
     simulate(eventManager, timesteps, rank, size);
 
+    // Sincronize all processes
+    MPI_Barrier(MPI_COMM_WORLD);
+
     // Print total density at the end of simulation
-    float total_density = sum_density();
+    float local_density = sum_density(M, N, O, dens);
+    printf("Rank %d: Local density = %f\n", rank, local_density);
+    float global_density;
+    MPI_Reduce(&local_density, &global_density, 1, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
+
     if (rank == 0) { // Apenas o processo com rank 0 imprime o resultado
-        std::cout << "Total density after " << timesteps
-                  << " timesteps: " << total_density << std::endl;
+        std::cout << "BOAAAAS Total density after " << timesteps
+                  << " timesteps: " << global_density << std::endl;
     }
 
     // Free memory
@@ -168,6 +151,8 @@ int main() {
 
     // Finalização do MPI
     MPI_Finalize();
+
+    printf("Rank %d: MPI finalized\n", rank);
 
     return 0;
 }
