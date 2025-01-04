@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <stdio.h>
+
 
 #define IX(i, j, k) ((i) + (M + 2) * (j) + (M + 2) * (N + 2) * (k))
 void SWAP(float *&x0, float *&x) { float *tmp = x0; x0 = x; x = tmp;}
@@ -101,7 +103,7 @@ float calculate_new_value(int i, int j, int k, float *x, float *x0, float a, flo
 
   if (fabs(c) < 1e-6) {
     printf("Error: Division by near-zero value at (%d, %d, %d)\n", i, j, k);
-    return x0[index]; // Or handle appropriately
+    return x0[index]; 
   }
 
   int idx_left = (i > 1) ? index - 1 : index;
@@ -119,18 +121,22 @@ float calculate_new_value(int i, int j, int k, float *x, float *x0, float a, flo
   return new_value;
 }
 
-int distribute_workload(int N, int size, int rank, int &start_index, int &end_index) {
-    // Dividir o intervalo do eixo j entre os ranks
-    int rows_per_process = N / size;
-    int remaining_rows = N % size;
+void distribute_workload(int N, int size, int rank, int &start_index, int &end_index) {
+    int chunk_size = N / size;
+    int remainder = N % size;
 
-    // Calcular start_index e end_index para o rank atual
-    start_index = rank * rows_per_process + std::min(rank, remaining_rows);
-    end_index = start_index + rows_per_process - 1 + (rank < remaining_rows ? 1 : 0);
+    // Calcula os índices iniciais e finais para cada rank
+    if (rank < remainder) {
+        start_index = rank * (chunk_size + 1);
+        end_index = start_index + chunk_size;
+    } else {
+        start_index = rank * chunk_size + remainder;
+        end_index = start_index + chunk_size - 1;
+    }
 
-    // Garantir que os índices estão dentro dos limites
-    if (start_index > end_index || start_index < 0 || end_index >= N) {
-        printf("Erro: Índices inválidos! Rank %d tem start_index=%d e end_index=%d\n",
+    // Verificar se os índices são válidos
+    if (start_index > end_index) {
+        printf("Erro (distribute_workload): Índices inválidos! Rank %d tem start_index=%d e end_index=%d\n",
                rank, start_index, end_index);
         start_index = -1;
         end_index = -1;
@@ -138,50 +144,110 @@ int distribute_workload(int N, int size, int rank, int &start_index, int &end_in
         printf("Rank %d: start_index=%d, end_index=%d\n", rank, start_index, end_index);
     }
 
-    // Verificação e retorno da quantidade de trabalho atribuída ao rank
-    return (start_index != -1 && end_index != -1) ? end_index - start_index + 1 : 0;
-}
-
-//void distribute_workload(int N, int size, int rank, int &start_index, int &end_index) {
-//    if (size == 0) {
-//        printf("Error: Division by zero in distribute_workload. Variable size is zero.\n");
-//        MPI_Abort(MPI_COMM_WORLD, 1);
-//    }
-//
-//    int base_chunk = N / size; // Verifique se size não é zero
-//    int remainder = N % size;
-//
-//    start_index = rank * base_chunk + std::min(rank, remainder) + 1;
-//    end_index = start_index + base_chunk - 1 + (rank < remainder ? 1 : 0);
-//}
-
-// Função para trocar fronteiras entre processos
-void exchange_boundaries(float *x, int M, int N, int O, int start_index, int end_index, int rank, int size) {
-    MPI_Request requests[4];
-    MPI_Status statuses[4];
-
-    int slice_size = (M + 2) * (O + 2); // Dimensão de uma fatia (XY plano)
-
-    // Inicializar requests como nulos
-    requests[0] = requests[1] = requests[2] = requests[3] = MPI_REQUEST_NULL;
-
-    // Top boundary
+    // Depuração global para verificar continuidade
+    int prev_end_index;
     if (rank > 0) {
-        MPI_Irecv(&x[IX(1, start_index - 1, 1)], slice_size, MPI_FLOAT, rank - 1, 1, MPI_COMM_WORLD, &requests[1]);
-        MPI_Isend(&x[IX(1, start_index, 1)], slice_size, MPI_FLOAT, rank - 1, 0, MPI_COMM_WORLD, &requests[0]);
+        MPI_Recv(&prev_end_index, 1, MPI_INT, rank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        if (start_index != prev_end_index + 1) {
+            printf("Erro de continuidade: Rank %d, start_index=%d não segue o end_index=%d do rank anterior!\n",
+                   rank, start_index, prev_end_index);
+        }
     }
+    MPI_Send(&end_index, 1, MPI_INT, (rank + 1) % size, 0, MPI_COMM_WORLD);
 
-    // Bottom boundary
-    if (rank < size - 1) {
-        MPI_Irecv(&x[IX(1, end_index + 1, 1)], slice_size, MPI_FLOAT, rank + 1, 0, MPI_COMM_WORLD, &requests[3]);
-        MPI_Isend(&x[IX(1, end_index, 1)], slice_size, MPI_FLOAT, rank + 1, 1, MPI_COMM_WORLD, &requests[2]);
+    // Exibir divisão final
+    MPI_Barrier(MPI_COMM_WORLD); // Sincronizar para mensagens ordenadas
+    for (int i = 0; i < size; ++i) {
+        if (rank == i) {
+            printf("Rank %d: range [%d, %d]\n", rank, start_index, end_index);
+        }
+        MPI_Barrier(MPI_COMM_WORLD); // Sincronizar saída
     }
-
-    // Esperar todas as comunicações serem finalizadas
-    MPI_Waitall(4, requests, statuses);
-    MPI_Barrier(MPI_COMM_WORLD);
 }
+/*
+void exchange_boundaries(float *x, int M, int N, int O, int start_index, int end_index, int rank, int size) {
+    int slice_size = (M / size) * N * O; // Cada fatia tem (M+2) * (O+2) elementos
 
+    int up_nbr = rank + 1;  // Processo superior (vizinho superior)
+    if (up_nbr >= size) up_nbr = MPI_PROC_NULL; // Caso seja o último processo, não há vizinho superior
+
+    int down_nbr = rank - 1;  // Processo inferior (vizinho inferior)
+    if (down_nbr < 0) down_nbr = MPI_PROC_NULL; // Caso seja o primeiro processo, não há vizinho inferior
+
+    // Primeira troca de dados (semelhante ao comportamento do código de exemplo)
+    if (rank % 2 == 0) {
+        if (up_nbr != MPI_PROC_NULL) {
+            // Troca com o processo superior (rank + 1)
+            MPI_Sendrecv(
+                &x[IX(0, start_index, 0)], slice_size, MPI_FLOAT, up_nbr, 0, 
+                &x[IX(0, start_index - 1, 0)], slice_size, MPI_FLOAT, up_nbr, 0, 
+                MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+    } else {
+        if (down_nbr != MPI_PROC_NULL) {
+            // Troca com o processo inferior (rank - 1)
+            MPI_Sendrecv(
+                &x[IX(0, end_index, 0)], slice_size, MPI_FLOAT, down_nbr, 0, 
+                &x[IX(0, end_index + 1, 0)], slice_size, MPI_FLOAT, down_nbr, 0, 
+                MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+    }
+
+    // Segunda troca de dados
+    if (rank % 2 == 1) {
+        if (up_nbr != MPI_PROC_NULL) {
+            // Troca com o processo superior (rank + 1)
+            MPI_Sendrecv(
+                &x[IX(0, start_index, 0)], slice_size, MPI_FLOAT, up_nbr, 1, 
+                &x[IX(0, start_index - 1, 0)], slice_size, MPI_FLOAT, up_nbr, 1, 
+                MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+    } else {
+        if (down_nbr != MPI_PROC_NULL) {
+            // Troca com o processo inferior (rank - 1)
+            MPI_Sendrecv(
+                &x[IX(0, end_index, 0)], slice_size, MPI_FLOAT, down_nbr, 1, 
+                &x[IX(0, end_index + 1, 0)], slice_size, MPI_FLOAT, down_nbr, 1, 
+                MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+    }
+
+    // Debugging: Print ranges exchanged
+    printf("Rank %d exchanged boundaries with neighbors (top: %d, bottom: %d)\n", 
+           rank, rank > 0 ? rank - 1 : -1, rank < size - 1 ? rank + 1 : -1);
+} */
+
+void exchange_boundaries(float *x, int M, int N, int O, int start_index, int end_index, int rank, int size) {
+    int slice_size = (M / size) * N * O;
+    if (rank == size - 1) {
+        // O último rank pode ter mais elementos devido à divisão não exata
+        slice_size += (M % size) * N * O;
+    }
+
+    printf("Rank %d: slice_size=%d\n", rank, slice_size);
+
+    // Exchange with the top
+    if (rank > 0) {
+        int err = MPI_Sendrecv(&x[IX(1, start_index, 1)], slice_size, MPI_FLOAT, rank - 1, 100,
+                               &x[IX(1, start_index - 1, 1)], slice_size, MPI_FLOAT, rank - 1, 101,
+                               MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        if (err != MPI_SUCCESS) {
+            fprintf(stderr, "MPI_Sendrecv failed (top exchange) on rank %d\n", rank);
+            MPI_Abort(MPI_COMM_WORLD, err);
+        }
+    }
+
+    // Exchange with the bottom
+    if (rank < size - 1) {
+        int err = MPI_Sendrecv(&x[IX(1, end_index, 1)], slice_size, MPI_FLOAT, rank + 1, 101,
+                               &x[IX(1, end_index + 1, 1)], slice_size, MPI_FLOAT, rank + 1, 100,
+                               MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        if (err != MPI_SUCCESS) {
+            fprintf(stderr, "MPI_Sendrecv failed (bottom exchange) on rank %d\n", rank);
+            MPI_Abort(MPI_COMM_WORLD, err);
+        }
+    }
+}
 
 
 void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c, int rank, int size) {
@@ -189,7 +255,11 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
     int l = 0, blockSize = 8;
 
     // Divisão do domínio por processo
-    int start_index, end_index;
+    int start_index = rank * (M / size);
+    int end_index = (rank + 1) * (M / size) - 1;
+    if (rank == size - 1) end_index = M - 1;
+
+    printf("Rank %d: start_index=%d, end_index=%d\n", rank, start_index, end_index);
     distribute_workload(N, size, rank, start_index, end_index);
 
     do {
@@ -252,6 +322,7 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
         }
     } while (global_max_c > tol && ++l < 20);
 }
+
 
 // Diffusion step (uses implicit method)
 void diffuse(int M, int N, int O, int b, float *x, float *x0, float diff, float dt, int rank, int size) {
