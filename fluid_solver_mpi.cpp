@@ -13,34 +13,22 @@ float MAX(float a, float b) { return (a > b) ? a : b; }
 #define LINEARSOLVERTIMES 20
 
 // Add sources (density or velocity)
-void add_source(int M, int N, int O, float *x, float *s, float dt) {
-  int size = (M + 2) * (N + 2) * (O + 2);
-
-  // Unroll the loop by a factor of 16
-  for (int i = 0; i <= size - 16; i += 16) {
-    x[i] += dt * s[i];
-    x[i + 1] += dt * s[i + 1];
-    x[i + 2] += dt * s[i + 2];
-    x[i + 3] += dt * s[i + 3];
-    x[i + 4] += dt * s[i + 4];
-    x[i + 5] += dt * s[i + 5];
-    x[i + 6] += dt * s[i + 6];
-    x[i + 7] += dt * s[i + 7];
-    x[i + 8] += dt * s[i + 8];
-    x[i + 9] += dt * s[i + 9];
-    x[i + 10] += dt * s[i + 10];
-    x[i + 11] += dt * s[i + 11];
-    x[i + 12] += dt * s[i + 12];
-    x[i + 13] += dt * s[i + 13];
-    x[i + 14] += dt * s[i + 14];
-    x[i + 15] += dt * s[i + 15];
-  }
-
-  // Handle the remaining elements
-  for (int i = size - (size % 16); i < size; i++) {
-    x[i] += dt * s[i];
-  }
+void add_source(int M, int N, int O, float *x, float *s, float dt, int start_i, int end_i, int start_j, int end_j, int start_k, int end_k) {
+    for (int k = start_k; k <= end_k; k++) {
+        for (int j = start_j; j <= end_j; j++) {
+            for (int i = start_i; i <= end_i - 3; i += 4) { 
+                x[IX(i, j, k)] += dt * s[IX(i, j, k)];
+                x[IX(i + 1, j, k)] += dt * s[IX(i + 1, j, k)];
+                x[IX(i + 2, j, k)] += dt * s[IX(i + 2, j, k)];
+                x[IX(i + 3, j, k)] += dt * s[IX(i + 3, j, k)];
+            }
+            for (int i = end_i - (end_i % 4); i <= end_i; i++) {
+                x[IX(i, j, k)] += dt * s[IX(i, j, k)];
+            }
+        }
+    }
 }
+
 
 // Set boundary conditions
 void set_bnd(int M, int N, int O, int b, float *x) {
@@ -121,153 +109,133 @@ float calculate_new_value(int i, int j, int k, float *x, float *x0, float a, flo
   return new_value;
 }
 
-void distribute_workload(int N, int size, int rank, int &start_index, int &end_index) {
-    int chunk_size = N / size;
-    int remainder = N % size;
 
-    // Calcula os índices iniciais e finais para cada rank
-    if (rank < remainder) {
-        start_index = rank * (chunk_size + 1);
-        end_index = start_index + chunk_size;
-    } else {
-        start_index = rank * chunk_size + remainder;
-        end_index = start_index + chunk_size - 1;
-    }
 
-    // Verificar se os índices são válidos
-    if (start_index > end_index) {
-        printf("Erro (distribute_workload): Índices inválidos! Rank %d tem start_index=%d e end_index=%d\n",
-               rank, start_index, end_index);
-        start_index = -1;
-        end_index = -1;
-    } else {
-        printf("Rank %d: start_index=%d, end_index=%d\n", rank, start_index, end_index);
-    }
 
-    // Depuração global para verificar continuidade
-    int prev_end_index;
-    if (rank > 0) {
-        MPI_Recv(&prev_end_index, 1, MPI_INT, rank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        if (start_index != prev_end_index + 1) {
-            printf("Erro de continuidade: Rank %d, start_index=%d não segue o end_index=%d do rank anterior!\n",
-                   rank, start_index, prev_end_index);
-        }
-    }
-    MPI_Send(&end_index, 1, MPI_INT, (rank + 1) % size, 0, MPI_COMM_WORLD);
+void distribute_workload(int M, int N, int O, int size, int rank,
+                         int &start_i, int &end_i,
+                         int &start_j, int &end_j,
+                         int &start_k, int &end_k,
+                         int dims[3], MPI_Comm &cart_comm) {
+    // Inicializar dims com zeros
+    dims[0] = 0;
+    dims[1] = 0;
+    dims[2] = 0;
 
-    // Exibir divisão final
-    MPI_Barrier(MPI_COMM_WORLD); // Sincronizar para mensagens ordenadas
-    for (int i = 0; i < size; ++i) {
-        if (rank == i) {
-            printf("Rank %d: range [%d, %d]\n", rank, start_index, end_index);
-        }
-        MPI_Barrier(MPI_COMM_WORLD); // Sincronizar saída
-    }
+    // Encontrar uma decomposição adequada para o número de processos
+    MPI_Dims_create(size, 3, dims); // Automatically find a suitable 3D decomposition
+
+    int num_blocks_i = dims[0];
+    int num_blocks_j = dims[1];
+    int num_blocks_k = dims[2];
+
+    int coords[3];
+
+    int periods[3] = {0, 0, 0}; // Non-periodic boundaries
+    MPI_Cart_create(MPI_COMM_WORLD, 3, dims, periods, 1, &cart_comm);
+    MPI_Cart_coords(cart_comm, rank, 3, coords);
+
+    int block_size_i = M / num_blocks_i;
+    int block_size_j = N / num_blocks_j;
+    int block_size_k = O / num_blocks_k;
+
+    int remainder_i = M % num_blocks_i;
+    int remainder_j = N % num_blocks_j;
+    int remainder_k = O % num_blocks_k;
+
+    start_i = coords[0] * block_size_i + std::min(coords[0], remainder_i);
+    end_i = start_i + block_size_i - 1 + (coords[0] < remainder_i);
+
+    start_j = coords[1] * block_size_j + std::min(coords[1], remainder_j);
+    end_j = start_j + block_size_j - 1 + (coords[1] < remainder_j);
+
+    start_k = coords[2] * block_size_k + std::min(coords[2], remainder_k);
+    end_k = start_k + block_size_k - 1 + (coords[2] < remainder_k);
+
+    printf("Rank %d: start_i=%d, end_i=%d, start_j=%d, end_j=%d, start_k=%d, end_k=%d\n", 
+           rank, start_i, end_i, start_j, end_j, start_k, end_k);
 }
-/*
-void exchange_boundaries(float *x, int M, int N, int O, int start_index, int end_index, int rank, int size) {
-    int slice_size = (M / size) * N * O; // Cada fatia tem (M+2) * (O+2) elementos
 
-    int up_nbr = rank + 1;  // Processo superior (vizinho superior)
-    if (up_nbr >= size) up_nbr = MPI_PROC_NULL; // Caso seja o último processo, não há vizinho superior
+void exchange_boundaries(float *x, int M, int N, int O,
+                         int start_i, int end_i, int start_j, int end_j, int start_k, int end_k,
+                         int rank, int size, const int dims[3], MPI_Comm cart_comm) {
+    MPI_Request requests[12];
+    int request_count = 0;
 
-    int down_nbr = rank - 1;  // Processo inferior (vizinho inferior)
-    if (down_nbr < 0) down_nbr = MPI_PROC_NULL; // Caso seja o primeiro processo, não há vizinho inferior
+    int coords[3], neighbors[6];
+    MPI_Cart_coords(cart_comm, rank, 3, coords);
 
-    // Primeira troca de dados (semelhante ao comportamento do código de exemplo)
-    if (rank % 2 == 0) {
-        if (up_nbr != MPI_PROC_NULL) {
-            // Troca com o processo superior (rank + 1)
-            MPI_Sendrecv(
-                &x[IX(0, start_index, 0)], slice_size, MPI_FLOAT, up_nbr, 0, 
-                &x[IX(0, start_index - 1, 0)], slice_size, MPI_FLOAT, up_nbr, 0, 
-                MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        }
-    } else {
-        if (down_nbr != MPI_PROC_NULL) {
-            // Troca com o processo inferior (rank - 1)
-            MPI_Sendrecv(
-                &x[IX(0, end_index, 0)], slice_size, MPI_FLOAT, down_nbr, 0, 
-                &x[IX(0, end_index + 1, 0)], slice_size, MPI_FLOAT, down_nbr, 0, 
-                MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        }
+    // Determine neighbors in all 6 directions
+    MPI_Cart_shift(cart_comm, 0, 1, &neighbors[0], &neighbors[1]); // i-axis
+    MPI_Cart_shift(cart_comm, 1, 1, &neighbors[2], &neighbors[3]); // j-axis
+    MPI_Cart_shift(cart_comm, 2, 1, &neighbors[4], &neighbors[5]); // k-axis
+
+    printf("Rank %d: Neighbors i-axis: %d, %d; j-axis: %d, %d; k-axis: %d, %d\n",
+           rank, neighbors[0], neighbors[1], neighbors[2], neighbors[3], neighbors[4], neighbors[5]);
+
+    // Exchange boundaries along i-axis (optimized access)
+    if (neighbors[0] != MPI_PROC_NULL) {
+        printf("Rank %d: Sending to rank %d along i-axis\n", rank, neighbors[0]);
+        MPI_Isend(&x[IX(start_i, start_j, start_k)], (end_j - start_j + 1) * (end_k - start_k + 1),
+                  MPI_FLOAT, neighbors[0], 0, cart_comm, &requests[request_count++]);
+        MPI_Irecv(&x[IX(start_i - 1, start_j, start_k)], (end_j - start_j + 1) * (end_k - start_k + 1),
+                  MPI_FLOAT, neighbors[0], 1, cart_comm, &requests[request_count++]);
+    }
+    if (neighbors[1] != MPI_PROC_NULL) {
+        printf("Rank %d: Sending to rank %d along i-axis\n", rank, neighbors[1]);
+        MPI_Isend(&x[IX(end_i, start_j, start_k)], (end_j - start_j + 1) * (end_k - start_k + 1),
+                  MPI_FLOAT, neighbors[1], 1, cart_comm, &requests[request_count++]);
+        MPI_Irecv(&x[IX(end_i + 1, start_j, start_k)], (end_j - start_j + 1) * (end_k - start_k + 1),
+                  MPI_FLOAT, neighbors[1], 0, cart_comm, &requests[request_count++]);
     }
 
-    // Segunda troca de dados
-    if (rank % 2 == 1) {
-        if (up_nbr != MPI_PROC_NULL) {
-            // Troca com o processo superior (rank + 1)
-            MPI_Sendrecv(
-                &x[IX(0, start_index, 0)], slice_size, MPI_FLOAT, up_nbr, 1, 
-                &x[IX(0, start_index - 1, 0)], slice_size, MPI_FLOAT, up_nbr, 1, 
-                MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        }
-    } else {
-        if (down_nbr != MPI_PROC_NULL) {
-            // Troca com o processo inferior (rank - 1)
-            MPI_Sendrecv(
-                &x[IX(0, end_index, 0)], slice_size, MPI_FLOAT, down_nbr, 1, 
-                &x[IX(0, end_index + 1, 0)], slice_size, MPI_FLOAT, down_nbr, 1, 
-                MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        }
+    // Exchange boundaries along j-axis (optimized access)
+    if (neighbors[2] != MPI_PROC_NULL) {
+        printf("Rank %d: Sending to rank %d along j-axis\n", rank, neighbors[2]);
+        MPI_Isend(&x[IX(start_i, start_j, start_k)], (end_i - start_i + 1) * (end_k - start_k + 1),
+                  MPI_FLOAT, neighbors[2], 2, cart_comm, &requests[request_count++]);
+        MPI_Irecv(&x[IX(start_i, start_j - 1, start_k)], (end_i - start_i + 1) * (end_k - start_k + 1),
+                  MPI_FLOAT, neighbors[2], 3, cart_comm, &requests[request_count++]);
+    }
+    if (neighbors[3] != MPI_PROC_NULL) {
+        printf("Rank %d: Sending to rank %d along j-axis\n", rank, neighbors[3]);
+        MPI_Isend(&x[IX(start_i, end_j, start_k)], (end_i - start_i + 1) * (end_k - start_k + 1),
+                  MPI_FLOAT, neighbors[3], 3, cart_comm, &requests[request_count++]);
+        MPI_Irecv(&x[IX(start_i, end_j + 1, start_k)], (end_i - start_i + 1) * (end_k - start_k + 1),
+                  MPI_FLOAT, neighbors[3], 2, cart_comm, &requests[request_count++]);
     }
 
-    // Debugging: Print ranges exchanged
-    printf("Rank %d exchanged boundaries with neighbors (top: %d, bottom: %d)\n", 
-           rank, rank > 0 ? rank - 1 : -1, rank < size - 1 ? rank + 1 : -1);
-} */
-
-void exchange_boundaries(float *x, int M, int N, int O, int start_index, int end_index, int rank, int size) {
-    int slice_size = (M / size) * N * O;
-    if (rank == size - 1) {
-        // O último rank pode ter mais elementos devido à divisão não exata
-        slice_size += (M % size) * N * O;
+    // Exchange boundaries along k-axis (optimized access)
+    if (neighbors[4] != MPI_PROC_NULL) {
+        printf("Rank %d: Sending to rank %d along k-axis\n", rank, neighbors[4]);
+        MPI_Isend(&x[IX(start_i, start_j, start_k)], (end_i - start_i + 1) * (end_j - start_j + 1),
+                  MPI_FLOAT, neighbors[4], 4, cart_comm, &requests[request_count++]);
+        MPI_Irecv(&x[IX(start_i, start_j, start_k - 1)], (end_i - start_i + 1) * (end_j - start_j + 1),
+                  MPI_FLOAT, neighbors[4], 5, cart_comm, &requests[request_count++]);
+    }
+    if (neighbors[5] != MPI_PROC_NULL) {
+        printf("Rank %d: Sending to rank %d along k-axis\n", rank, neighbors[5]);
+        MPI_Isend(&x[IX(start_i, start_j, end_k)], (end_i - start_i + 1) * (end_j - start_j + 1),
+                  MPI_FLOAT, neighbors[5], 5, cart_comm, &requests[request_count++]);
+        MPI_Irecv(&x[IX(start_i, start_j, end_k + 1)], (end_i - start_i + 1) * (end_j - start_j + 1),
+                  MPI_FLOAT, neighbors[5], 4, cart_comm, &requests[request_count++]);
     }
 
-    printf("Rank %d: slice_size=%d\n", rank, slice_size);
-
-    // Exchange with the top
-    if (rank > 0) {
-        int err = MPI_Sendrecv(&x[IX(1, start_index, 1)], slice_size, MPI_FLOAT, rank - 1, 100,
-                               &x[IX(1, start_index - 1, 1)], slice_size, MPI_FLOAT, rank - 1, 101,
-                               MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        if (err != MPI_SUCCESS) {
-            fprintf(stderr, "MPI_Sendrecv failed (top exchange) on rank %d\n", rank);
-            MPI_Abort(MPI_COMM_WORLD, err);
-        }
-    }
-
-    // Exchange with the bottom
-    if (rank < size - 1) {
-        int err = MPI_Sendrecv(&x[IX(1, end_index, 1)], slice_size, MPI_FLOAT, rank + 1, 101,
-                               &x[IX(1, end_index + 1, 1)], slice_size, MPI_FLOAT, rank + 1, 100,
-                               MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        if (err != MPI_SUCCESS) {
-            fprintf(stderr, "MPI_Sendrecv failed (bottom exchange) on rank %d\n", rank);
-            MPI_Abort(MPI_COMM_WORLD, err);
-        }
-    }
+    MPI_Waitall(request_count, requests, MPI_STATUSES_IGNORE);
+    printf("Rank %d: Finished exchange_boundaries_optimized\n", rank);
 }
 
 
-void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c, int rank, int size) {
+void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c, int rank, int size, int start_i, int end_i, int start_j, int end_j, int start_k, int end_k, const int dims[3], MPI_Comm cart_comm) {
     float tol = 1e-7, max_c, global_max_c, old_x, change;
     int l = 0, blockSize = 8;
-
-    // Divisão do domínio por processo
-    int start_index = rank * (M / size);
-    int end_index = (rank + 1) * (M / size) - 1;
-    if (rank == size - 1) end_index = M - 1;
-
-    printf("Rank %d: start_index=%d, end_index=%d\n", rank, start_index, end_index);
-    distribute_workload(N, size, rank, start_index, end_index);
 
     do {
         max_c = 0.0f;
 
         // Red phase
         for (int kk = 1; kk <= O; kk += blockSize) {
-            for (int jj = start_index; jj < end_index; jj += blockSize) {
+            for (int jj = start_j; jj <= end_j; jj += blockSize) {
                 int k_max = std::min(kk + blockSize, O + 1);
                 int j_max = std::min(jj + blockSize, N + 1);
 
@@ -286,11 +254,11 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
             }
         }
 
-        exchange_boundaries(x, M, N, O, start_index, end_index, rank, size);
+        exchange_boundaries(x, M, N, O, start_i, end_i, start_j, end_j, start_k, end_k, rank, size, dims, cart_comm);
 
         // Black phase
         for (int kk = 1; kk <= O; kk += blockSize) {
-            for (int jj = start_index; jj < end_index; jj += blockSize) {
+            for (int jj = start_j; jj <= end_j; jj += blockSize) {
                 int k_max = std::min(kk + blockSize, O + 1);
                 int j_max = std::min(jj + blockSize, N + 1);
 
@@ -309,7 +277,7 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
             }
         }
 
-        exchange_boundaries(x, M, N, O, start_index, end_index, rank, size);
+        exchange_boundaries(x, M, N, O, start_i, end_i, start_j, end_j, start_k, end_k, rank, size, dims, cart_comm);
 
         // Redução global do max_c
         MPI_Allreduce(&max_c, &global_max_c, 1, MPI_FLOAT, MPI_MAX, MPI_COMM_WORLD);
@@ -323,33 +291,34 @@ void lin_solve(int M, int N, int O, int b, float *x, float *x0, float a, float c
     } while (global_max_c > tol && ++l < 20);
 }
 
-
 // Diffusion step (uses implicit method)
-void diffuse(int M, int N, int O, int b, float *x, float *x0, float diff, float dt, int rank, int size) {
-  int max = MAX(MAX(M, N), O);
-  float a = dt * diff * max * max;
-  lin_solve(M, N, O, b, x, x0, a, 1 + 6 * a, rank, size);
+void diffuse(int M, int N, int O, int b, float *x, float *x0, float diff, float dt, int rank, int size, int start_i, int end_i, int start_j, int end_j, int start_k, int end_k, const int dims[3], MPI_Comm cart_comm) {
+    int max = MAX(MAX(M, N), O);
+    float a = dt * diff * max * max;
+    lin_solve(M, N, O, b, x, x0, a, 1 + 6 * a, rank, size, start_i, end_i, start_j, end_j, start_k, end_k, dims, cart_comm);
 }
 
 // Advection step (uses velocity field to move quantities)
-void advect(int M, int N, int O, int b, float *d, float *d0, float *u, float *v, float *w, float dt, int rank, int size) {
+void advect(int M, int N, int O, int b, float *d, float *d0, float *u, float *v, float *w, float dt, int rank, int size, int start_i, int end_i, int start_j, int end_j, int start_k, int end_k, const int dims[3], MPI_Comm cart_comm) {
     float dtX = dt * M, dtY = dt * N, dtZ = dt * O;
 
+    int num_blocks = std::cbrt(size);
+
     // Troca de fronteiras antes da advecção
-    exchange_boundaries(d0, M, N, O, 1, N, rank, size);
+    exchange_boundaries(d, M, N, O, start_i, end_i, start_j, end_j, start_k, end_k, rank, size, dims, cart_comm);
 
     int block_size_i = 8;
     int block_size_j = 8;
     int block_size_k = 8;
 
-    for (int kk = 1; kk <= O; kk += block_size_k) {
-        for (int jj = 1; jj <= N; jj += block_size_j) {
-            for (int ii = 1; ii <= M; ii += block_size_i) {
+    for (int kk = start_k; kk <= end_k; kk += block_size_k) {
+        for (int jj = start_j; jj <= end_j; jj += block_size_j) {
+            for (int ii = start_i; ii <= end_i; ii += block_size_i) {
                 // Iterar sobre os elementos dentro de cada bloco
 
-                for (int k = kk; k < kk + block_size_k && k <= O; k++) {
-                    for (int j = jj; j < jj + block_size_j && j <= N; j++) {
-                        for (int i = ii; i < ii + block_size_i && i <= M; i++) {
+                for (int k = kk; k < kk + block_size_k && k <= end_k; k++) {
+                    for (int j = jj; j < jj + block_size_j && j <= end_j; j++) {
+                        for (int i = ii; i < ii + block_size_i && i <= end_i; i++) {
                             int idx = IX(i, j, k);
                             float x = i - dtX * u[idx];
                             float y = j - dtY * v[idx];
@@ -383,131 +352,139 @@ void advect(int M, int N, int O, int b, float *d, float *d0, float *u, float *v,
     }
 
     // Troca de fronteiras após a advecção
-    exchange_boundaries(d, M, N, O, 1, N, rank, size);
+    exchange_boundaries(d, M, N, O, start_i, end_i, start_j, end_j, start_k, end_k, rank, size, dims, cart_comm);
     set_bnd(M, N, O, b, d);
 }
 
 
 // Projection step to ensure incompressibility (make the velocity field divergence-free)
-void project(int M, int N, int O, float *u, float *v, float *w, float *p, float *div, int rank, int size) {
-  int M2 = M + 2;
-  int N2 = N + 2;
-  int MN2 = M2 * N2;
+void project(int M, int N, int O, float *u, float *v, float *w, float *p, float *div, int rank, int size, int start_i, int end_i, int start_j, int end_j, int start_k, int end_k, const int dims[3], MPI_Comm cart_comm) {
+    int M2 = M + 2;
+    int N2 = N + 2;
+    int MN2 = M2 * N2;
 
-  int block_size_i = 8;
-  int block_size_j = 8;
-  int block_size_k = 8;
+    int block_size_i = 8;
+    int block_size_j = 8;
+    int block_size_k = 8;
 
-  // Troca de fronteiras antes da projeção
-  exchange_boundaries(u, M, N, O, 1, N, rank, size);
-  exchange_boundaries(v, M, N, O, 1, N, rank, size);
-  exchange_boundaries(w, M, N, O, 1, N, rank, size);
+    int num_blocks = std::cbrt(size);
 
-  // Primeira parte: cálculo de div e inicialização de p com loop unrolling
-  for (int kk = 1; kk <= O; kk += block_size_k) {
-    for (int jj = 1; jj <= N; jj += block_size_j) {
-      for (int ii = 1; ii <= M; ii += block_size_i) {
+    // Troca de fronteiras antes da projeção
+    exchange_boundaries(u, M, N, O, start_i, end_i, start_j, end_j, start_k, end_k, rank, size, dims, cart_comm);
+    exchange_boundaries(v, M, N, O, start_i, end_i, start_j, end_j, start_k, end_k, rank, size, dims, cart_comm);
+    exchange_boundaries(w, M, N, O, start_i, end_i, start_j, end_j, start_k, end_k, rank, size, dims, cart_comm);
 
-        for (int k = kk; k < kk + block_size_k && k <= O; k++) {
-          for (int j = jj; j < jj + block_size_j && j <= N; j++) {
-            int i;
-            // Loop unrolling por um fator de 8
-            for (i = ii; i <= M - 7 && i < ii + block_size_i; i += 8) {
-              for (int offset = 0; offset < 8; ++offset) {
-                int idx = (i + offset) + j * M2 + k * MN2;
-                div[idx] = -0.5f * (u[(i + offset + 1) + j * M2 + k * MN2] - u[(i + offset - 1) + j * M2 + k * MN2] +
-                                    v[(i + offset) + (j + 1) * M2 + k * MN2] - v[(i + offset) + (j - 1) * M2 + k * MN2] +
-                                    w[(i + offset) + j * M2 + (k + 1) * MN2] - w[(i + offset) + j * M2 + (k - 1) * MN2]) 
-                          / MAX(M, MAX(N, O));
-                p[idx] = 0;
-              }
+    // Primeira parte: cálculo de div e inicialização de p com loop unrolling
+    for (int kk = start_k; kk <= end_k; kk += block_size_k) {
+        for (int jj = start_j; jj <= end_j; jj += block_size_j) {
+            for (int ii = start_i; ii <= end_i; ii += block_size_i) {
+
+                for (int k = kk; k < kk + block_size_k && k <= end_k; k++) {
+                    for (int j = jj; j < jj + block_size_j && j <= end_j; j++) {
+                        int i;
+                        // Loop unrolling por um fator de 8
+                        for (i = ii; i <= end_i - 7 && i < ii + block_size_i; i += 8) {
+                            for (int offset = 0; offset < 8; ++offset) {
+                                int idx = (i + offset) + j * M2 + k * MN2;
+                                if ((i + offset + 1) < M2 && (i + offset - 1) >= 0 && (j + 1) < N2 && (j - 1) >= 0 && (k + 1) < O + 2 && (k - 1) >= 0) {
+                                    div[idx] = -0.5f * (u[(i + offset + 1) + j * M2 + k * MN2] - u[(i + offset - 1) + j * M2 + k * MN2] +
+                                                        v[(i + offset) + (j + 1) * M2 + k * MN2] - v[(i + offset) + (j - 1) * M2 + k * MN2] +
+                                                        w[(i + offset) + j * M2 + (k + 1) * MN2] - w[(i + offset) + j * M2 + (k - 1) * MN2])
+                                            / MAX(M, MAX(N, O));
+                                    p[idx] = 0;
+                                }
+                            }
+                        }
+                        // Elementos restantes
+                        for (; i <= end_i && i < ii + block_size_i; i++) {
+                            int idx = i + j * M2 + k * MN2;
+                            if ((i + 1) < M2 && (i - 1) >= 0 && (j + 1) < N2 && (j - 1) >= 0 && (k + 1) < O + 2 && (k - 1) >= 0) {
+                                div[idx] = -0.5f * (u[(i + 1) + j * M2 + k * MN2] - u[(i - 1) + j * M2 + k * MN2] +
+                                                    v[i + (j + 1) * M2 + k * MN2] - v[i + (j - 1) * M2 + k * MN2] +
+                                                    w[i + j * M2 + (k + 1) * MN2] - w[i + j * M2 + (k - 1) * MN2])
+                                        / MAX(M, MAX(N, O));
+                                p[idx] = 0;
+                            }
+                        }
+                    }
+                }
             }
-            // Elementos restantes
-            for (; i <= M && i < ii + block_size_i; i++) {
-              int idx = i + j * M2 + k * MN2;
-              div[idx] = -0.5f * (u[(i + 1) + j * M2 + k * MN2] - u[(i - 1) + j * M2 + k * MN2] +
-                                  v[i + (j + 1) * M2 + k * MN2] - v[i + (j - 1) * M2 + k * MN2] +
-                                  w[i + j * M2 + (k + 1) * MN2] - w[i + j * M2 + (k - 1) * MN2]) 
-                        / MAX(M, MAX(N, O));
-              p[idx] = 0;
-            }
-          }
         }
-      }
     }
-  }
 
-  set_bnd(M, N, O, 0, div);
-  set_bnd(M, N, O, 0, p);
-  lin_solve(M, N, O, 0, p, div, 1, 6, rank, size);
+    set_bnd(M, N, O, 0, div);
+    set_bnd(M, N, O, 0, p);
+    lin_solve(M, N, O, 0, p, div, 1, 6, rank, size, start_i, end_i, start_j, end_j, start_k, end_k, dims, cart_comm);
 
-  // Segunda parte: atualização de u, v e w com loop unrolling
-  for (int kk = 1; kk <= O; kk += block_size_k) {
-    for (int jj = 1; jj <= N; jj += block_size_j) {
-      for (int ii = 1; ii <= M; ii += block_size_i) {
-        for (int k = kk; k < kk + block_size_k && k <= O; k++) {
-          for (int j = jj; j < jj + block_size_j && j <= N; j++) {
-            int i;
-            // Loop unrolling por um fator de 8
-            for (i = ii; i <= M - 7 && i < ii + block_size_i; i += 8) {
-              for (int offset = 0; offset < 8; ++offset) {
-                int idx = (i + offset) + j * M2 + k * MN2;
-                u[idx] -= 0.5f * (p[(i + offset + 1) + j * M2 + k * MN2] - p[(i + offset - 1) + j * M2 + k * MN2]);
-                v[idx] -= 0.5f * (p[(i + offset) + (j + 1) * M2 + k * MN2] - p[(i + offset) + (j - 1) * M2 + k * MN2]);
-                w[idx] -= 0.5f * (p[(i + offset) + j * M2 + (k + 1) * MN2] - p[(i + offset) + j * M2 + (k - 1) * MN2]);
-              }
+    // Segunda parte: atualização de u, v e w com loop unrolling
+    for (int kk = start_k; kk <= end_k; kk += block_size_k) {
+        for (int jj = start_j; jj <= end_j; jj += block_size_j) {
+            for (int ii = start_i; ii <= end_i; ii += block_size_i) {
+                for (int k = kk; k < kk + block_size_k && k <= end_k; k++) {
+                    for (int j = jj; j < jj + block_size_j && j <= end_j; j++) {
+                        int i;
+                        // Loop unrolling por um fator de 8
+                        for (i = ii; i <= end_i - 7 && i < ii + block_size_i; i += 8) {
+                            for (int offset = 0; offset < 8; ++offset) {
+                                int idx = (i + offset) + j * M2 + k * MN2;
+                                if ((i + offset + 1) < M2 && (i + offset - 1) >= 0 && (j + 1) < N2 && (j - 1) >= 0 && (k + 1) < O + 2 && (k - 1) >= 0) {
+                                    u[idx] -= 0.5f * (p[(i + offset + 1) + j * M2 + k * MN2] - p[(i + offset - 1) + j * M2 + k * MN2]);
+                                    v[idx] -= 0.5f * (p[(i + offset) + (j + 1) * M2 + k * MN2] - p[(i + offset) + (j - 1) * M2 + k * MN2]);
+                                    w[idx] -= 0.5f * (p[(i + offset) + j * M2 + (k + 1) * MN2] - p[(i + offset) + j * M2 + (k - 1) * MN2]);
+                                }
+                            }
+                        }
+                        // Elementos restantes
+                        for (; i <= end_i && i < ii + block_size_i; i++) {
+                            int idx = i + j * M2 + k * MN2;
+                            if ((i + 1) < M2 && (i - 1) >= 0 && (j + 1) < N2 && (j - 1) >= 0 && (k + 1) < O + 2 && (k - 1) >= 0) {
+                                u[idx] -= 0.5f * (p[(i + 1) + j * M2 + k * MN2] - p[(i - 1) + j * M2 + k * MN2]);
+                                v[idx] -= 0.5f * (p[i + (j + 1) * M2 + k * MN2] - p[i + (j - 1) * M2 + k * MN2]);
+                                w[idx] -= 0.5f * (p[i + j * M2 + (k + 1) * MN2] - p[i + j * M2 + (k - 1) * MN2]);
+                            }
+                        }
+                    }
+                }
             }
-            // Elementos restantes
-            for (; i <= M && i < ii + block_size_i; i++) {
-              int idx = i + j * M2 + k * MN2;
-              u[idx] -= 0.5f * (p[(i + 1) + j * M2 + k * MN2] - p[(i - 1) + j * M2 + k * MN2]);
-              v[idx] -= 0.5f * (p[i + (j + 1) * M2 + k * MN2] - p[i + (j - 1) * M2 + k * MN2]);
-              w[idx] -= 0.5f * (p[i + j * M2 + (k + 1) * MN2] - p[i + j * M2 + (k - 1) * MN2]);
-            }
-          }
         }
-      }
     }
-  }
 
-  set_bnd(M, N, O, 1, u);
-  set_bnd(M, N, O, 2, v);
-  set_bnd(M, N, O, 3, w);
+    set_bnd(M, N, O, 1, u);
+    set_bnd(M, N, O, 2, v);
+    set_bnd(M, N, O, 3, w);
 
-  // Troca de fronteiras após a projeção
-  exchange_boundaries(u, M, N, O, 1, N, rank, size);
-  exchange_boundaries(v, M, N, O, 1, N, rank, size);
-  exchange_boundaries(w, M, N, O, 1, N, rank, size);
+    // Troca de fronteiras após a projeção
+    exchange_boundaries(u, M, N, O, start_i, end_i, start_j, end_j, start_k, end_k, rank, size, dims, cart_comm);
+    exchange_boundaries(v, M, N, O, start_i, end_i, start_j, end_j, start_k, end_k, rank, size, dims, cart_comm);
+    exchange_boundaries(w, M, N, O, start_i, end_i, start_j, end_j, start_k, end_k, rank, size, dims, cart_comm);
 }
 
 
 // Step function for density
-void dens_step(int M, int N, int O, float *x, float *x0, float *u, float *v, float *w, float diff, float dt, int rank, int size) {
-    add_source(M, N, O, x, x0, dt);
-    SWAP(x0, x);
-    diffuse(M, N, O, 0, x, x0, diff, dt, rank, size);
-    SWAP(x0, x);
-    advect(M, N, O, 0, x, x0, u, v, w, dt, rank, size);
+void vel_step(int M, int N, int O, float *u, float *v, float *w, float *u0, float *v0, float *w0, float visc, float dt, int rank, int size, int start_i, int end_i, int start_j, int end_j, int start_k, int end_k, const int dims[3], MPI_Comm cart_comm) {
+    add_source(M, N, O, u, u0, dt, start_i, end_i, start_j, end_j, start_k, end_k);
+    add_source(M, N, O, v, v0, dt, start_i, end_i, start_j, end_j, start_k, end_k);
+    add_source(M, N, O, w, w0, dt, start_i, end_i, start_j, end_j, start_k, end_k);
+    SWAP(u0, u);
+    diffuse(M, N, O, 1, u, u0, visc, dt, rank, size, start_i, end_i, start_j, end_j, start_k, end_k, dims, cart_comm);
+    SWAP(v0, v);
+    diffuse(M, N, O, 2, v, v0, visc, dt, rank, size, start_i, end_i, start_j, end_j, start_k, end_k, dims, cart_comm);
+    SWAP(w0, w);
+    diffuse(M, N, O, 3, w, w0, visc, dt, rank, size, start_i, end_i, start_j, end_j, start_k, end_k, dims, cart_comm);
+    project(M, N, O, u, v, w, u0, v0, rank, size, start_i, end_i, start_j, end_j, start_k, end_k, dims, cart_comm);
+    SWAP(u0, u);
+    SWAP(v0, v);
+    SWAP(w0, w);
+    advect(M, N, O, 1, u, u0, u0, v0, w0, dt, rank, size, start_i, end_i, start_j, end_j, start_k, end_k, dims, cart_comm);
+    advect(M, N, O, 2, v, v0, u0, v0, w0, dt, rank, size, start_i, end_i, start_j, end_j, start_k, end_k, dims, cart_comm);
+    advect(M, N, O, 3, w, w0, u0, v0, w0, dt, rank, size, start_i, end_i, start_j, end_j, start_k, end_k, dims, cart_comm);
+    project(M, N, O, u, v, w, u0, v0, rank, size, start_i, end_i, start_j, end_j, start_k, end_k, dims, cart_comm);
 }
 
-
-// Step function for velocity
-void vel_step(int M, int N, int O, float *u, float *v, float *w, float *u0, float *v0, float *w0, float visc, float dt, int rank, int size) {
-  add_source(M, N, O, u, u0, dt);
-  add_source(M, N, O, v, v0, dt);
-  add_source(M, N, O, w, w0, dt);
-  SWAP(u0, u);
-  diffuse(M, N, O, 1, u, u0, visc, dt, rank, size);
-  SWAP(v0, v);
-  diffuse(M, N, O, 2, v, v0, visc, dt, rank, size);
-  SWAP(w0, w);
-  diffuse(M, N, O, 3, w, w0, visc, dt, rank, size);
-  project(M, N, O, u, v, w, u0, v0, rank, size);
-  SWAP(u0, u);
-  SWAP(v0, v);
-  SWAP(w0, w);
-  advect(M, N, O, 1, u, u0, u0, v0, w0, dt, rank, size);
-  advect(M, N, O, 2, v, v0, u0, v0, w0, dt, rank, size);
-  advect(M, N, O, 3, w, w0, u0, v0, w0, dt, rank, size);
-  project(M, N, O, u, v, w, u0, v0, rank, size);
+void dens_step(int M, int N, int O, float *x, float *x0, float *u, float *v, float *w, float diff, float dt, int rank, int size, int start_i, int end_i, int start_j, int end_j, int start_k, int end_k, const int dims[3], MPI_Comm cart_comm) {
+    add_source(M, N, O, x, x0, dt, start_i, end_i, start_j, end_j, start_k, end_k);
+    SWAP(x0, x);
+    diffuse(M, N, O, 0, x, x0, diff, dt, rank, size, start_i, end_i, start_j, end_j, start_k, end_k, dims, cart_comm);
+    SWAP(x0, x);
+    advect(M, N, O, 0, x, x0, u, v, w, dt, rank, size, start_i, end_i, start_j, end_j, start_k, end_k, dims, cart_comm);
 }

@@ -78,28 +78,34 @@ void apply_events(const std::vector<Event> &events) {
 }
 
 // Function to sum the total density
-float sum_density(int M, int N, int O, float *x) {
-    float total_density = 0.0f;
-    for (int i = 0; i < (M + 2) * (N + 2) * (O + 2); i++) {
-        total_density += x[i];
+float sum_density(int M, int N, int O, float *x, int start_i, int end_i, int start_j, int end_j, int start_k, int end_k, int rank) {
+    float local_density = 0.0f;
+    for (int k = start_k; k <= end_k; k++) {
+        for (int j = start_j; j <= end_j; j++) {
+            for (int i = start_i; i <= end_i; i++) {
+                local_density += x[IX(i, j, k)];
+            }
+        }
     }
-    //printf("Local total density: %f\n", total_density); // Debug message
-    return total_density;
+    printf("Rank %d: Local density = %.2f\n", rank, local_density);
+    return local_density;
 }
 
 // Simulation loop
-void simulate(EventManager &eventManager, int timesteps, int rank, int size) {
-  for (int t = 0; t < timesteps; t++) {
-    // Get the events for the current timestep
-    std::vector<Event> events = eventManager.get_events_at_timestamp(t);
+void simulate(EventManager &eventManager, int timesteps, int rank, int size, const int dims[3], MPI_Comm cart_comm,
+              int start_i, int end_i, int start_j, int end_j, int start_k, int end_k) {
+    for (int t = 0; t < timesteps; t++) {
+        // Get the events for the current timestep
+        std::vector<Event> events = eventManager.get_events_at_timestamp(t);
 
-    // Apply events to the simulation
-    apply_events(events);
+        // Apply events to the simulation
+        apply_events(events);
 
-    // Perform the simulation steps
-    vel_step(M, N, O, u, v, w, u_prev, v_prev, w_prev, visc, dt, rank, size);
-    dens_step(M, N, O, dens, dens_prev, u, v, w, diff, dt, rank, size);
-  }
+        // Perform the simulation steps
+        vel_step(M, N, O, u, v, w, u_prev, v_prev, w_prev, visc, dt, rank, size, start_i, end_i, start_j, end_j, start_k, end_k, dims, cart_comm);
+        dens_step(M, N, O, dens, dens_prev, u, v, w, diff, dt, rank, size, start_i, end_i, start_j, end_j, start_k, end_k, dims, cart_comm);
+        //MPI_Barrier(MPI_COMM_WORLD);
+    }
 }
 
 int main() {
@@ -128,21 +134,27 @@ int main() {
     if (!allocate_data())
         return -1;
     clear_data();
-    
+
+    // Distribute workload
+    int start_i, end_i, start_j, end_j, start_k, end_k;
+    int dims[3];
+    MPI_Comm cart_comm;
+    distribute_workload(M, N, O, size, rank, start_i, end_i, start_j, end_j, start_k, end_k, dims, cart_comm);
+
+
     // Run simulation with events
-    simulate(eventManager, timesteps, rank, size);
+    simulate(eventManager, timesteps, rank, size, dims, cart_comm, start_i, end_i, start_j, end_j, start_k, end_k);
 
     // Sincronize all processes
     MPI_Barrier(MPI_COMM_WORLD);
 
     // Print total density at the end of simulation
-    float local_density = sum_density(M, N, O, dens);
-    printf("Rank %d: Local density = %f\n", rank, local_density);
+    float local_density = sum_density(M, N, O, dens, start_i, end_i, start_j, end_j, start_k, end_k, rank);
     float global_density;
     MPI_Reduce(&local_density, &global_density, 1, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
 
     if (rank == 0) { // Apenas o processo com rank 0 imprime o resultado
-        std::cout << "BOAAAAS Total density after " << timesteps
+        std::cout << "Total density after " << timesteps
                   << " timesteps: " << global_density << std::endl;
     }
 
