@@ -6,23 +6,27 @@ MPI_CPP = mpic++
 NUM_THREADS = 20
 MPI_INCLUDE = -I/usr/lib/x86_64-linux-gnu/openmpi/include
 
-all: runseq runpar runmpi
+all: fluid_sim_seq fluid_sim fluid_sim_mpi
+
+fluid_sim_seq: $(SRCS_SEQ)
+    @echo Compiling with command: $(CPP) $(SRCS_SEQ) -o fluid_sim_seq
+    $(CPP) $(SRCS_SEQ) -o fluid_sim_seq
+
+fluid_sim: $(SRCS_PAR)
+    @echo Compiling with OpenMP support
+    $(CPP) -fopenmp $(SRCS_PAR) -o fluid_sim
+
+fluid_sim_mpi: $(SRCS_MPI)
+    @echo Compiling with MPI support
+    $(MPI_CPP) $(MPI_INCLUDE) $(SRCS_MPI) -o fluid_sim_mpi
 
 clean:
-	@echo Cleaning up...
-	@rm -f fluid_sim fluid_sim_seq fluid_sim_mpi
-	@echo Done.
+    @echo Cleaning up...
+    @rm -f fluid_sim fluid_sim_seq fluid_sim_mpi
+    @echo Done.
 
-runseq:
-	@echo Compiling with command: $(CPP) $(SRCS_SEQ) -o fluid_sim_seq
-	$(CPP) $(SRCS_SEQ) -o fluid_sim_seq
-	./fluid_sim_seq
+run: all
+    @echo Submitting job to the cluster with sbatch
+    @sbatch runmpi.sh
 
-runpar:
-	$(CPP) -fopenmp $(SRCS_PAR) -o fluid_sim
-	@echo Executing with $(NUM_THREADS) threads
-	OMP_NUM_THREADS=$(NUM_THREADS) ./fluid_sim
-
-runmpi:
-	$(MPI_CPP) $(MPI_INCLUDE) $(SRCS_MPI) -o fluid_sim_mpi
-	@echo Executing with MPI
+.PHONY: all clean run
